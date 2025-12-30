@@ -1,0 +1,390 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:geolocator/geolocator.dart';
+import 'dart:async';
+import 'package:running_historian/services/location_service.dart';
+import 'package:running_historian/domain/route_point.dart';
+import 'package:running_historian/domain/run_session.dart';
+import 'package:running_historian/storage/run_repository.dart';
+import 'package:running_historian/ui/widgets/run_controls.dart';
+import 'package:running_historian/ui/widgets/distance_panel.dart';
+import 'package:running_historian/config/constants.dart';
+import 'package:running_historian/services/tts_service.dart';
+import 'package:running_historian/services/audio_service.dart';
+import 'package:running_historian/domain/landmark.dart';
+import 'package:running_historian/ui/screens/history_screen.dart';
+
+class RunScreen extends StatefulWidget {
+  const RunScreen({super.key});
+
+  @override
+  State<RunScreen> createState() => _RunScreenState();
+}
+
+class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
+  final MapController _mapController = MapController();
+  Position? _currentPosition;
+  StreamSubscription<Position>? _locationSubscription;
+  Timer? _factsTimer;
+  bool _isRunning = false;
+  bool _showResults = false;
+  final AudioService _audio = AudioService();
+  late final TtsService _tts;
+  List<RoutePoint> _route = [];
+  DateTime? _runStartTime;
+  DateTime? _runEndTime;
+  int _factsCount = 0;
+  double _distance = 0.0;
+  final List<String> _shownFacts = [];
+  List<RunSession> _history = [];
+  MusicMode _musicMode = MusicMode.external;
+  DateTime? _lastFactTime;
+  bool _isPaused = false;
+
+  // Анимации
+  late AnimationController _distanceController;
+  late Animation<double> _distanceAnimation;
+  late AnimationController _factController;
+  late Animation<double> _factAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _tts = TtsService(_audio)..init();
+    _initAnimations();
+    _loadHistory();
+  }
+
+  void _initAnimations() {
+    _distanceController = AnimationController(duration: const Duration(milliseconds: 500), vsync: this);
+    _distanceAnimation = Tween<double>(begin: 0, end: 1).animate(_distanceController);
+    
+    _factController = AnimationController(duration: const Duration(milliseconds: 1000), vsync: this);
+    _factAnimation = Tween<double>(begin: 0, end: 1).animate(_factController);
+  }
+
+  @override
+  void dispose() {
+    _locationSubscription?.cancel();
+    _factsTimer?.cancel();
+    _distanceController.dispose();
+    _factController.dispose();
+    _tts.dispose();
+    _audio.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadHistory() async {
+    _history = await RunRepository().getHistory();
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _startLocationUpdates() {
+    _locationSubscription?.cancel();
+    _locationSubscription = LocationService.getPositionStream().listen((position) {
+      if (!_isRunning || _isPaused) return;
+
+      if (mounted) {
+        setState(() {
+          _currentPosition = position;
+          if (_isRunning) {
+            _route.add(RoutePoint.fromPosition(position));
+            _calculateDistance();
+            _checkProximity(position);
+          }
+        });
+
+        _mapController.move(
+          LatLng(position.latitude, position.longitude),
+          15,
+        );
+      }
+    });
+  }
+
+  void _calculateDistance() {
+    if (_route.length < 2) return;
+
+    double lastDistance = 0.0;
+    if (_route.length >= 2) {
+      lastDistance = LocationService.calculateDistance(
+        _route[_route.length - 2].toPosition(),
+        _route[_route.length - 1].toPosition(),
+      );
+    }
+
+    setState(() {
+      _distance += lastDistance / 1000;
+    });
+    _distanceController.reset();
+    _distanceController.forward();
+  }
+
+  void _checkProximity(Position position) {
+    for (var landmark in kLandmarks) {
+      double distance = LocationService.calculateDistance(
+        position,
+        Position(
+          latitude: landmark.lat,
+          longitude: landmark.lon,
+          timestamp: DateTime.now(),
+          accuracy: 10.0,
+          altitude: 0.0,
+          heading: 0.0,
+          speed: 0.0,
+          speedAccuracy: 0.0,
+          altitudeAccuracy: 0.0,
+          headingAccuracy: 0.0,
+        ),
+      );
+
+      if (distance <= landmark.radius && !_shownFacts.contains(landmark.id)) {
+        _speak("Вы проходите мимо ${landmark.name}. ${landmark.fact}");
+        if (mounted) {
+          setState(() {
+            _factsCount++;
+            _shownFacts.add(landmark.id);
+          });
+        }
+        _factController.forward().then((_) => _factController.reverse());
+      }
+    }
+  }
+
+  void _speak(String text) async {
+    if (!mounted) return;
+
+    if (_musicMode == MusicMode.app) {
+      await _audio.setVolume(0.3);
+    }
+
+    await _tts.speak(text);
+
+    if (_musicMode == MusicMode.app && _isRunning) {
+      await _audio.setVolume(1.0);
+    }
+    print("📢 Говорю: $text");
+  }
+
+  void _startGeneralFacts() {
+    _factsTimer?.cancel();
+    _factsTimer = Timer.periodic(Duration(minutes: kFactsIntervalMinutes), (timer) {
+      if (_isRunning && !_isPaused && _route.length > 5) {
+        final now = DateTime.now();
+        if (_lastFactTime == null || now.difference(_lastFactTime!) >= Duration(minutes: kMinIntervalBetweenFacts)) {
+          _lastFactTime = now;
+          int randomIndex = DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
+          _speak("Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}");
+        }
+      }
+    });
+  }
+
+  void _startRun() {
+    if (mounted) {
+      setState(() {
+        _isRunning = true;
+        _showResults = false;
+        _runStartTime = DateTime.now();
+        _route = [];
+        _factsCount = 0;
+        _distance = 0.0;
+        _shownFacts.clear();
+        _lastFactTime = null;
+        _isPaused = false;
+      });
+    }
+
+    _startLocationUpdates();
+    _audio.playMusic(_musicMode);
+    _startGeneralFacts();
+  }
+
+  void _stopRun() {
+    if (mounted) {
+      setState(() {
+        _isRunning = false;
+        _showResults = true;
+        _runEndTime = DateTime.now();
+      });
+    }
+    _locationSubscription?.cancel();
+    _audio.stopMusic();
+    _factsTimer?.cancel();
+    _saveRunSession();
+  }
+
+  void _pauseRun() {
+    if (mounted) {
+      setState(() {
+        _isPaused = true;
+      });
+    }
+  }
+
+  void _resumeRun() {
+    if (mounted) {
+      setState(() {
+        _isPaused = false;
+      });
+    }
+  }
+
+  Future<void> _saveRunSession() async {
+    final session = RunSession(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      date: DateTime.now(),
+      distance: _distance,
+      duration: _runEndTime!.difference(_runStartTime!).inSeconds,
+      factsCount: _factsCount,
+      route: _route,
+    );
+
+    await RunRepository().saveSession(session);
+
+    if (mounted) {
+      setState(() {
+        _history.add(session);
+      });
+    }
+
+    print("💾 Сессия сохранена: $_distance км, $_factsCount фактов");
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_showResults) {
+      return Container(); // Пока пустой, будет в другом файле
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Ростов-на-Дону'),
+        actions: [
+          IconButton(
+            icon: Icon(_musicMode == MusicMode.app ? Icons.music_note : Icons.library_music),
+            onPressed: () {
+              setState(() {
+                _musicMode = _musicMode == MusicMode.app 
+                    ? MusicMode.external 
+                    : MusicMode.app;
+              });
+              _audio.playMusic(_musicMode);
+            },
+          ),
+          PopupMenuButton<String>(
+            onSelected: (String choice) {
+              if (choice == 'history') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => HistoryScreen(history: _history)),
+                );
+              }
+            },
+            itemBuilder: (BuildContext context) {
+              return {
+                'history': 'История пробежек',
+              }.entries.map((entry) {
+                return PopupMenuItem<String>(
+                  value: entry.key,
+                  child: Text(entry.value),
+                );
+              }).toList();
+            },
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _currentPosition != null
+                  ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+                  : const LatLng(47.2313, 39.7233),
+              initialZoom: 15,
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.running_historian',
+              ),
+              if (_route.isNotEmpty)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: _route
+                          .map((p) => LatLng(p.lat, p.lon))
+                          .toList(),
+                      color: const Color(0xFF9C27B0),
+                      strokeWidth: 8,
+                    )
+                  ],
+                ),
+              if (_currentPosition != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: LatLng(
+                        _currentPosition!.latitude,
+                        _currentPosition!.longitude,
+                      ),
+                      width: 50,
+                      height: 50,
+                      child: const Icon(
+                        Icons.directions_run,
+                        color: Colors.green,
+                        size: 30,
+                      ),
+                    ),
+                  ],
+                ),
+              if (_route.isNotEmpty)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: LatLng(
+                        _route.first.lat,
+                        _route.first.lon,
+                      ),
+                      width: 30,
+                      height: 30,
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.fiber_manual_record, color: Colors.white, size: 16),
+                      ),
+                    ),
+                  ],
+                ),
+              MarkerLayer(
+                markers: kLandmarks.map((landmark) {
+                  return Marker(
+                    point: LatLng(landmark.lat, landmark.lon),
+                    width: 40,
+                    height: 40,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                      ),
+                      child: const Icon(Icons.location_pin, color: Colors.white, size: 24),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+          const DistancePanel(), // Вынесено в отдельный виджет
+          const RunControls(),   // Вынесено в отдельный виджет
+        ],
+      ),
+    );
+  }
+}
