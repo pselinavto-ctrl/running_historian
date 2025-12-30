@@ -10,8 +10,7 @@ class RunningHistorianApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Running Historian',
       theme: ThemeData(useMaterial3: true),
-      home:
-          const RunScreen(), // 👈 const, потому что RunScreen — StatefulWidget
+      home: const RunScreen(),
     );
   }
 }

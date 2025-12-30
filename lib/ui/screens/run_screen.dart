@@ -14,6 +14,7 @@ import 'package:running_historian/services/tts_service.dart';
 import 'package:running_historian/services/audio_service.dart';
 import 'package:running_historian/domain/landmark.dart';
 import 'package:running_historian/ui/screens/history_screen.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class RunScreen extends StatefulWidget {
   const RunScreen({super.key});
@@ -198,9 +199,48 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       });
     }
 
+    _requestLocationPermission(); // Запрос разрешений
     _startLocationUpdates();
     _audio.playMusic(_musicMode);
     _startGeneralFacts();
+  }
+
+  Future<void> _requestLocationPermission() async {
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Разрешите геолокацию'),
+            content: const Text('Пожалуйста, разрешите доступ к геолокации в настройках'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('ОК'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Разрешите геолокацию'),
+          content: const Text('Разрешение на геолокацию отклонено навсегда. Пожалуйста, включите его в настройках'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('ОК'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   void _stopRun() {
