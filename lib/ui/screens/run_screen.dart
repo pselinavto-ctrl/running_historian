@@ -55,13 +55,17 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _tts = TtsService(_audio)..init();
     _initAnimations();
     _loadHistory();
+    _initLocation(); // 👈 Инициализация геолокации при старте экрана
   }
 
   void _initAnimations() {
-    _distanceController = AnimationController(duration: const Duration(milliseconds: 500), vsync: this);
-    _distanceAnimation = Tween<double>(begin: 0, end: 1).animate(_distanceController);
-    
-    _factController = AnimationController(duration: const Duration(milliseconds: 1000), vsync: this);
+    _distanceController = AnimationController(
+        duration: const Duration(milliseconds: 500), vsync: this);
+    _distanceAnimation =
+        Tween<double>(begin: 0, end: 1).animate(_distanceController);
+
+    _factController = AnimationController(
+        duration: const Duration(milliseconds: 1000), vsync: this);
     _factAnimation = Tween<double>(begin: 0, end: 1).animate(_factController);
   }
 
@@ -83,9 +87,74 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _initLocation() async {
+    // 1. Проверяем включена ли геолокация вообще
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _showError('Включите геолокацию на устройстве');
+      return;
+    }
+
+    // 2. Проверяем разрешения
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.denied) {
+      _showError('Без геолокации приложение не работает');
+      return;
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      _showError('Разрешите геолокацию в настройках');
+      return;
+    }
+
+    // 3. ПОЛУЧАЕМ ТЕКУЩУЮ ПОЗИЦИЮ (КРИТИЧНО)
+    final position = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.best,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _currentPosition = position;
+    });
+
+    // 4. СРАЗУ ЦЕНТРИРУЕМ КАРТУ
+    _mapController.move(
+      LatLng(position.latitude, position.longitude),
+      15,
+    );
+
+    // 5. СТАРТУЕМ STREAM
+    _startLocationUpdates();
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Геолокация'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ОК'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _startLocationUpdates() {
     _locationSubscription?.cancel();
-    _locationSubscription = LocationService.getPositionStream().listen((position) {
+    _locationSubscription =
+        LocationService.getPositionStream().listen((position) {
       if (!_isRunning || _isPaused) return;
 
       if (mounted) {
@@ -172,13 +241,18 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
   void _startGeneralFacts() {
     _factsTimer?.cancel();
-    _factsTimer = Timer.periodic(Duration(minutes: kFactsIntervalMinutes), (timer) {
+    _factsTimer =
+        Timer.periodic(Duration(minutes: kFactsIntervalMinutes), (timer) {
       if (_isRunning && !_isPaused && _route.length > 5) {
         final now = DateTime.now();
-        if (_lastFactTime == null || now.difference(_lastFactTime!) >= Duration(minutes: kMinIntervalBetweenFacts)) {
+        if (_lastFactTime == null ||
+            now.difference(_lastFactTime!) >=
+                Duration(minutes: kMinIntervalBetweenFacts)) {
           _lastFactTime = now;
-          int randomIndex = DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
-          _speak("Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}");
+          int randomIndex =
+              DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
+          _speak(
+              "Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}");
         }
       }
     });
@@ -199,48 +273,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       });
     }
 
-    _requestLocationPermission(); // Запрос разрешений
     _startLocationUpdates();
     _audio.playMusic(_musicMode);
     _startGeneralFacts();
-  }
-
-  Future<void> _requestLocationPermission() async {
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Разрешите геолокацию'),
-            content: const Text('Пожалуйста, разрешите доступ к геолокации в настройках'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('ОК'),
-              ),
-            ],
-          ),
-        );
-      }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Разрешите геолокацию'),
-          content: const Text('Разрешение на геолокацию отклонено навсегда. Пожалуйста, включите его в настройках'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('ОК'),
-            ),
-          ],
-        ),
-      );
-    }
   }
 
   void _stopRun() {
@@ -305,11 +340,13 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         title: const Text('Ростов-на-Дону'),
         actions: [
           IconButton(
-            icon: Icon(_musicMode == MusicMode.app ? Icons.music_note : Icons.library_music),
+            icon: Icon(_musicMode == MusicMode.app
+                ? Icons.music_note
+                : Icons.library_music),
             onPressed: () {
               setState(() {
-                _musicMode = _musicMode == MusicMode.app 
-                    ? MusicMode.external 
+                _musicMode = _musicMode == MusicMode.app
+                    ? MusicMode.external
                     : MusicMode.app;
               });
               _audio.playMusic(_musicMode);
@@ -320,7 +357,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
               if (choice == 'history') {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => HistoryScreen(history: _history)),
+                  MaterialPageRoute(
+                      builder: (context) => HistoryScreen(history: _history)),
                 );
               }
             },
@@ -343,7 +381,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _currentPosition != null
-                  ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+                  ? LatLng(
+                      _currentPosition!.latitude, _currentPosition!.longitude)
                   : const LatLng(47.2313, 39.7233),
               initialZoom: 15,
             ),
@@ -356,9 +395,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                 PolylineLayer(
                   polylines: [
                     Polyline(
-                      points: _route
-                          .map((p) => LatLng(p.lat, p.lon))
-                          .toList(),
+                      points: _route.map((p) => LatLng(p.lat, p.lon)).toList(),
                       color: const Color(0xFF9C27B0),
                       strokeWidth: 8,
                     )
@@ -397,7 +434,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                           color: Colors.red,
                           shape: BoxShape.circle,
                         ),
-                        child: const Icon(Icons.fiber_manual_record, color: Colors.white, size: 16),
+                        child: const Icon(Icons.fiber_manual_record,
+                            color: Colors.white, size: 16),
                       ),
                     ),
                   ],
@@ -414,7 +452,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 2),
                       ),
-                      child: const Icon(Icons.location_pin, color: Colors.white, size: 24),
+                      child: const Icon(Icons.location_pin,
+                          color: Colors.white, size: 24),
                     ),
                   );
                 }).toList(),
@@ -422,7 +461,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             ],
           ),
           const DistancePanel(), // Вынесено в отдельный виджет
-          const RunControls(),   // Вынесено в отдельный виджет
+          const RunControls(), // Вынесено в отдельный виджет
         ],
       ),
     );
