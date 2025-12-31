@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:running_historian/domain/run_session.dart';
+import 'package:running_historian/ui/screens/results_screen.dart';
 
 class HistoryScreen extends StatelessWidget {
   final List<RunSession> history;
@@ -23,11 +24,27 @@ class HistoryScreen extends StatelessWidget {
                       '${session.distance.toStringAsFixed(2)} км',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    subtitle: Text('Факты: ${session.factsCount}'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Факты: ${session.factsCount}'),
+                        Text('Дата: ${formatDate(session.date)}'), // 👈 Используем функцию
+                      ],
+                    ),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => ResultsScreen(session: session)),
+                      );
+                    },
                   ),
                 );
               },
             ),
     );
   }
+}
+
+String formatDate(DateTime date) { // 👈 Переносим функцию сюда
+  return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
 }

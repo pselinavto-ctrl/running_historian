@@ -5,7 +5,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: '^3.10.0'
 
 dependencies:
   flutter:
@@ -28,8 +28,8 @@ dependencies:
   flutter_background_service: ^5.0.5
   flutter_background_service_android: ^6.0.3
 
-  permission_handler: ^11.0.1  # 👈 Добавьте эту строку
-  app_settings: ^5.1.1  # 👈 Добавьте эту строку
+  permission_handler: ^11.0.1
+  app_settings: ^5.1.1
 
 dev_dependencies:
   flutter_test:
@@ -38,6 +38,6 @@ dev_dependencies:
   flutter_lints: ^2.0.0
 
 flutter:
-  uses-material-design: true  # 👈 Исправьте на "true"
+  uses-material-design: true
   assets:
     - assets/music.mp3

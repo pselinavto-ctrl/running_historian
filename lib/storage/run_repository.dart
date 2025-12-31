@@ -1,6 +1,6 @@
 import 'package:hive/hive.dart';
 import 'package:running_historian/domain/run_session.dart';
-import 'package:running_historian/domain/route_point.dart';
+import 'package:running_historian/domain/route_point.dart'; // 👈 Добавьте импорт
 
 class RunRepository {
   final Box box = Hive.box('runs');
@@ -24,10 +24,7 @@ class RunRepository {
         distance: data['distance'].toDouble(),
         duration: data['duration'],
         factsCount: data['factsCount'],
-        route: (data['route'] as List)
-            .cast<Map<String, dynamic>>()
-            .map((e) => RoutePoint.fromJson(e))
-            .toList(),
+        route: (data['route'] as List).cast<Map<String, dynamic>>().map((e) => RoutePoint.fromJson(e)).toList(),
       );
     }).toList();
   }

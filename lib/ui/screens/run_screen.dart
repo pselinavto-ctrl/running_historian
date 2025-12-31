@@ -323,7 +323,26 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     if (_showResults) {
-      return Container(); // Пока пустой, будет в другом файле
+      return Scaffold(
+        appBar: AppBar(title: const Text('Результаты')),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('Дистанция: ${_distance.toStringAsFixed(2)} км'),
+              Text('Факты: $_factsCount'),
+              ElevatedButton(
+                onPressed: () {
+                  setState(() {
+                    _showResults = false; // Возвращаемся к карте
+                  });
+                },
+                child: const Text('Продолжить'),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
     return Scaffold(
@@ -447,15 +466,15 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
               ),
             ],
           ),
-          const DistancePanel(), // Вынесено в отдельный виджет
-          RunControls( // 👈 УБРАНО: const
+          DistancePanel(distance: _distance),
+          RunControls(
             isRunning: _isRunning,
             isPaused: _isPaused,
             onStart: _startRun,
             onPause: _pauseRun,
             onResume: _resumeRun,
             onStop: _stopRun,
-          ),   // Вынесено в отдельный виджет
+          ),
         ],
       ),
     );

@@ -26,7 +26,7 @@ class RunControls extends StatelessWidget {
         right: 20,
         child: FloatingActionButton(
           backgroundColor: Colors.green,
-          onPressed: onStart, // 👈 Вызывает _startRun()
+          onPressed: onStart,
           child: const Icon(Icons.play_arrow),
         ),
       );
@@ -38,7 +38,7 @@ class RunControls extends StatelessWidget {
         right: 20,
         child: FloatingActionButton(
           backgroundColor: Colors.green,
-          onPressed: onResume, // 👈 Вызывает _resumeRun()
+          onPressed: onResume,
           child: const Icon(Icons.play_arrow),
         ),
       );
@@ -52,13 +52,13 @@ class RunControls extends StatelessWidget {
         children: [
           FloatingActionButton(
             backgroundColor: Colors.orange,
-            onPressed: onPause, // 👈 Вызывает _pauseRun()
+            onPressed: onPause,
             child: const Icon(Icons.pause),
           ),
           const SizedBox(width: 10),
           FloatingActionButton(
             backgroundColor: Colors.red,
-            onPressed: onStop, // 👈 Вызывает _stopRun()
+            onPressed: onStop,
             child: const Icon(Icons.stop),
           ),
         ],
