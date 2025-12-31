@@ -1,10 +1,49 @@
 import 'package:flutter/material.dart';
 
 class RunControls extends StatelessWidget {
-  const RunControls({super.key});
+  final bool isRunning;
+  final bool isPaused;
+  final VoidCallback onStart;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final VoidCallback onStop;
+
+  const RunControls({
+    super.key,
+    required this.isRunning,
+    required this.isPaused,
+    required this.onStart,
+    required this.onPause,
+    required this.onResume,
+    required this.onStop,
+  });
 
   @override
   Widget build(BuildContext context) {
+    if (!isRunning) {
+      return Positioned(
+        bottom: 20,
+        right: 20,
+        child: FloatingActionButton(
+          backgroundColor: Colors.green,
+          onPressed: onStart, // 👈 Вызывает _startRun()
+          child: const Icon(Icons.play_arrow),
+        ),
+      );
+    }
+
+    if (isPaused) {
+      return Positioned(
+        bottom: 20,
+        right: 20,
+        child: FloatingActionButton(
+          backgroundColor: Colors.green,
+          onPressed: onResume, // 👈 Вызывает _resumeRun()
+          child: const Icon(Icons.play_arrow),
+        ),
+      );
+    }
+
     return Positioned(
       bottom: 20,
       right: 20,
@@ -13,25 +52,13 @@ class RunControls extends StatelessWidget {
         children: [
           FloatingActionButton(
             backgroundColor: Colors.orange,
-            onPressed: () {
-              // Пауза
-            },
+            onPressed: onPause, // 👈 Вызывает _pauseRun()
             child: const Icon(Icons.pause),
           ),
           const SizedBox(width: 10),
           FloatingActionButton(
-            backgroundColor: Colors.green,
-            onPressed: () {
-              // Возобновление
-            },
-            child: const Icon(Icons.play_arrow),
-          ),
-          const SizedBox(width: 10),
-          FloatingActionButton(
             backgroundColor: Colors.red,
-            onPressed: () {
-              // Остановка
-            },
+            onPressed: onStop, // 👈 Вызывает _stopRun()
             child: const Icon(Icons.stop),
           ),
         ],

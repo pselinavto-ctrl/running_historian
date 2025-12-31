@@ -15,6 +15,7 @@ import 'package:running_historian/services/audio_service.dart';
 import 'package:running_historian/domain/landmark.dart';
 import 'package:running_historian/ui/screens/history_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:app_settings/app_settings.dart';
 
 class RunScreen extends StatefulWidget {
   const RunScreen({super.key});
@@ -55,17 +56,14 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _tts = TtsService(_audio)..init();
     _initAnimations();
     _loadHistory();
-    _initLocation(); // 👈 Инициализация геолокации при старте экрана
+    _initLocation(); // Инициализация геолокации при старте экрана
   }
 
   void _initAnimations() {
-    _distanceController = AnimationController(
-        duration: const Duration(milliseconds: 500), vsync: this);
-    _distanceAnimation =
-        Tween<double>(begin: 0, end: 1).animate(_distanceController);
-
-    _factController = AnimationController(
-        duration: const Duration(milliseconds: 1000), vsync: this);
+    _distanceController = AnimationController(duration: const Duration(milliseconds: 500), vsync: this);
+    _distanceAnimation = Tween<double>(begin: 0, end: 1).animate(_distanceController);
+    
+    _factController = AnimationController(duration: const Duration(milliseconds: 1000), vsync: this);
     _factAnimation = Tween<double>(begin: 0, end: 1).animate(_factController);
   }
 
@@ -91,7 +89,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     // 1. Проверяем включена ли геолокация вообще
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      _showError('Включите геолокацию на устройстве');
+      await Geolocator.openLocationSettings(); // 👈 НАТИВНО
       return;
     }
 
@@ -153,25 +151,23 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
   void _startLocationUpdates() {
     _locationSubscription?.cancel();
-    _locationSubscription =
-        LocationService.getPositionStream().listen((position) {
-      if (!_isRunning || _isPaused) return;
+    _locationSubscription = LocationService.getPositionStream().listen((position) {
+      if (!mounted) return;
 
-      if (mounted) {
-        setState(() {
-          _currentPosition = position;
-          if (_isRunning) {
-            _route.add(RoutePoint.fromPosition(position));
-            _calculateDistance();
-            _checkProximity(position);
-          }
-        });
+      setState(() {
+        _currentPosition = position;
 
-        _mapController.move(
-          LatLng(position.latitude, position.longitude),
-          15,
-        );
-      }
+        if (_isRunning && !_isPaused) {
+          _route.add(RoutePoint.fromPosition(position));
+          _calculateDistance();
+          _checkProximity(position);
+        }
+      });
+
+      _mapController.move(
+        LatLng(position.latitude, position.longitude),
+        15,
+      );
     });
   }
 
@@ -241,18 +237,13 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
   void _startGeneralFacts() {
     _factsTimer?.cancel();
-    _factsTimer =
-        Timer.periodic(Duration(minutes: kFactsIntervalMinutes), (timer) {
+    _factsTimer = Timer.periodic(Duration(minutes: kFactsIntervalMinutes), (timer) {
       if (_isRunning && !_isPaused && _route.length > 5) {
         final now = DateTime.now();
-        if (_lastFactTime == null ||
-            now.difference(_lastFactTime!) >=
-                Duration(minutes: kMinIntervalBetweenFacts)) {
+        if (_lastFactTime == null || now.difference(_lastFactTime!) >= Duration(minutes: kMinIntervalBetweenFacts)) {
           _lastFactTime = now;
-          int randomIndex =
-              DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
-          _speak(
-              "Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}");
+          int randomIndex = DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
+          _speak("Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}");
         }
       }
     });
@@ -340,13 +331,11 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         title: const Text('Ростов-на-Дону'),
         actions: [
           IconButton(
-            icon: Icon(_musicMode == MusicMode.app
-                ? Icons.music_note
-                : Icons.library_music),
+            icon: Icon(_musicMode == MusicMode.app ? Icons.music_note : Icons.library_music),
             onPressed: () {
               setState(() {
-                _musicMode = _musicMode == MusicMode.app
-                    ? MusicMode.external
+                _musicMode = _musicMode == MusicMode.app 
+                    ? MusicMode.external 
                     : MusicMode.app;
               });
               _audio.playMusic(_musicMode);
@@ -357,8 +346,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
               if (choice == 'history') {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(
-                      builder: (context) => HistoryScreen(history: _history)),
+                  MaterialPageRoute(builder: (context) => HistoryScreen(history: _history)),
                 );
               }
             },
@@ -381,8 +369,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _currentPosition != null
-                  ? LatLng(
-                      _currentPosition!.latitude, _currentPosition!.longitude)
+                  ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
                   : const LatLng(47.2313, 39.7233),
               initialZoom: 15,
             ),
@@ -395,7 +382,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                 PolylineLayer(
                   polylines: [
                     Polyline(
-                      points: _route.map((p) => LatLng(p.lat, p.lon)).toList(),
+                      points: _route
+                          .map((p) => LatLng(p.lat, p.lon))
+                          .toList(),
                       color: const Color(0xFF9C27B0),
                       strokeWidth: 8,
                     )
@@ -434,8 +423,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                           color: Colors.red,
                           shape: BoxShape.circle,
                         ),
-                        child: const Icon(Icons.fiber_manual_record,
-                            color: Colors.white, size: 16),
+                        child: const Icon(Icons.fiber_manual_record, color: Colors.white, size: 16),
                       ),
                     ),
                   ],
@@ -452,8 +440,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 2),
                       ),
-                      child: const Icon(Icons.location_pin,
-                          color: Colors.white, size: 24),
+                      child: const Icon(Icons.location_pin, color: Colors.white, size: 24),
                     ),
                   );
                 }).toList(),
@@ -461,7 +448,14 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             ],
           ),
           const DistancePanel(), // Вынесено в отдельный виджет
-          const RunControls(), // Вынесено в отдельный виджет
+          RunControls( // 👈 УБРАНО: const
+            isRunning: _isRunning,
+            isPaused: _isPaused,
+            onStart: _startRun,
+            onPause: _pauseRun,
+            onResume: _resumeRun,
+            onStop: _stopRun,
+          ),   // Вынесено в отдельный виджет
         ],
       ),
     );
