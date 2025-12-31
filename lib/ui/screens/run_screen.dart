@@ -15,7 +15,6 @@ import 'package:running_historian/services/audio_service.dart';
 import 'package:running_historian/domain/landmark.dart';
 import 'package:running_historian/ui/screens/history_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:app_settings/app_settings.dart';
 
 class RunScreen extends StatefulWidget {
   const RunScreen({super.key});
@@ -176,9 +175,33 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
     double lastDistance = 0.0;
     if (_route.length >= 2) {
+      final pos1 = _route[_route.length - 2];
+      final pos2 = _route[_route.length - 1];
       lastDistance = LocationService.calculateDistance(
-        _route[_route.length - 2].toPosition(),
-        _route[_route.length - 1].toPosition(),
+        Position(
+          latitude: pos1.lat,
+          longitude: pos1.lon,
+          timestamp: pos1.timestamp,
+          accuracy: 10.0,
+          altitude: 0.0,
+          heading: 0.0,
+          speed: 0.0,
+          speedAccuracy: 0.0,
+          altitudeAccuracy: 0.0,
+          headingAccuracy: 0.0,
+        ),
+        Position(
+          latitude: pos2.lat,
+          longitude: pos2.lon,
+          timestamp: pos2.timestamp,
+          accuracy: 10.0,
+          altitude: 0.0,
+          heading: 0.0,
+          speed: 0.0,
+          speedAccuracy: 0.0,
+          altitudeAccuracy: 0.0,
+          headingAccuracy: 0.0,
+        ),
       );
     }
 

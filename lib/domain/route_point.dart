@@ -1,8 +1,17 @@
+import 'package:hive/hive.dart';
 import 'package:geolocator/geolocator.dart';
 
+part 'route_point.g.dart';
+
+@HiveType(typeId: 1)
 class RoutePoint {
+  @HiveField(0)
   final double lat;
+
+  @HiveField(1)
   final double lon;
+
+  @HiveField(2)
   final DateTime timestamp;
 
   RoutePoint({
@@ -16,37 +25,6 @@ class RoutePoint {
       lat: position.latitude,
       lon: position.longitude,
       timestamp: position.timestamp ?? DateTime.now(),
-    );
-  }
-
-  Position toPosition() {
-    return Position(
-      latitude: lat,
-      longitude: lon,
-      timestamp: timestamp,
-      accuracy: 10.0,
-      altitude: 0.0,
-      heading: 0.0,
-      speed: 0.0,
-      speedAccuracy: 0.0,
-      altitudeAccuracy: 0.0,
-      headingAccuracy: 0.0,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'lat': lat,
-      'lon': lon,
-      'timestamp': timestamp.toIso8601String(),
-    };
-  }
-
-  factory RoutePoint.fromJson(Map<String, dynamic> json) {
-    return RoutePoint(
-      lat: json['lat'].toDouble(),
-      lon: json['lon'].toDouble(),
-      timestamp: DateTime.parse(json['timestamp']),
     );
   }
 }

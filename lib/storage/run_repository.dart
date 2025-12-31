@@ -1,31 +1,14 @@
 import 'package:hive/hive.dart';
-import 'package:running_historian/domain/run_session.dart';
-import 'package:running_historian/domain/route_point.dart'; // 👈 Добавьте импорт
+import '../domain/run_session.dart';
 
 class RunRepository {
-  final Box box = Hive.box('runs');
+  static final Box<RunSession> _box = Hive.box<RunSession>('runs');
 
   Future<void> saveSession(RunSession session) async {
-    await box.add({
-      'id': session.id,
-      'date': session.date.toIso8601String(),
-      'distance': session.distance,
-      'duration': session.duration,
-      'factsCount': session.factsCount,
-      'route': session.route.map((p) => p.toJson()).toList(),
-    });
+    await _box.put(session.id, session);
   }
 
-  Future<List<RunSession>> getHistory() async {
-    return box.values.cast<Map>().map((data) {
-      return RunSession(
-        id: data['id'],
-        date: DateTime.parse(data['date']),
-        distance: data['distance'].toDouble(),
-        duration: data['duration'],
-        factsCount: data['factsCount'],
-        route: (data['route'] as List).cast<Map<String, dynamic>>().map((e) => RoutePoint.fromJson(e)).toList(),
-      );
-    }).toList();
+  List<RunSession> getHistory() {
+    return _box.values.toList();
   }
 }

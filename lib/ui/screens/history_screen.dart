@@ -28,7 +28,7 @@ class HistoryScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text('Факты: ${session.factsCount}'),
-                        Text('Дата: ${formatDate(session.date)}'), // 👈 Используем функцию
+                        Text('Дата: ${formatDate(session.date)}'),
                       ],
                     ),
                     onTap: () {
@@ -45,6 +45,6 @@ class HistoryScreen extends StatelessWidget {
   }
 }
 
-String formatDate(DateTime date) { // 👈 Переносим функцию сюда
+String formatDate(DateTime date) {
   return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
 }

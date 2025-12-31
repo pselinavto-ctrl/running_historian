@@ -19,17 +19,20 @@ class RoutePointAdapter extends TypeAdapter<RoutePoint> {
     return RoutePoint(
       lat: fields[0] as double,
       lon: fields[1] as double,
+      timestamp: fields[2] as DateTime,
     );
   }
 
   @override
   void write(BinaryWriter writer, RoutePoint obj) {
     writer
-      ..writeByte(2)
+      ..writeByte(3)
       ..writeByte(0)
       ..write(obj.lat)
       ..writeByte(1)
-      ..write(obj.lon);
+      ..write(obj.lon)
+      ..writeByte(2)
+      ..write(obj.timestamp);
   }
 
   @override
