@@ -197,31 +197,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     if (_route.length >= 2) {
       final pos1 = _route[_route.length - 2];
       final pos2 = _route[_route.length - 1];
-      lastDistance = LocationService.calculateDistance(
-        Position(
-          latitude: pos1.lat,
-          longitude: pos1.lon,
-          timestamp: pos1.timestamp,
-          accuracy: 10.0,
-          altitude: 0.0,
-          heading: 0.0,
-          speed: 0.0,
-          speedAccuracy: 0.0,
-          altitudeAccuracy: 0.0,
-          headingAccuracy: 0.0,
-        ),
-        Position(
-          latitude: pos2.lat,
-          longitude: pos2.lon,
-          timestamp: pos2.timestamp,
-          accuracy: 10.0,
-          altitude: 0.0,
-          heading: 0.0,
-          speed: 0.0,
-          speedAccuracy: 0.0,
-          altitudeAccuracy: 0.0,
-          headingAccuracy: 0.0,
-        ),
+      // 👇 ИСПОЛЬЗУЕМ Geolocator.distanceBetween
+      lastDistance = Geolocator.distanceBetween(
+        pos1.lat,
+        pos1.lon,
+        pos2.lat,
+        pos2.lon,
       );
     }
 
@@ -248,12 +229,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                 Duration(minutes: kMinIntervalBetweenFacts)) {
           _lastFactTime = now;
 
-          // 👇 ПОЛУЧАЕМ ВСЕ СКАЗАННЫЕ ИНДЕКСЫ
+          // 👇 ПОЛУЧАЕМ ВСЕ СКАЗАННЫЕ ИНДЕКСЫ (из прошлых сессий)
           final allSpokenIndices = RunRepository().getAllSpokenFactIndices();
-          allSpokenIndices.addAll(_lastFactIndices); // добавляем локальные
 
           // ИЩЕМ НЕСКАЗАННЫЙ ФАКТ
-          int? randomIndex;
           final availableIndices = <int>[];
           for (int i = 0; i < kGeneralFacts.length; i++) {
             if (!allSpokenIndices.contains(i)) {
@@ -261,12 +240,14 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             }
           }
 
+          int? randomIndex;
           if (availableIndices.isNotEmpty) {
+            // 👇 БЕРЕМ СЛУЧАЙНЫЙ ИЗ ОСТАВШИХСЯ
             randomIndex =
                 availableIndices[DateTime.now().millisecondsSinceEpoch %
                     availableIndices.length];
           } else {
-            // если все факты сказаны — начинаем сначала (или можно не говорить)
+            // 👇 ЕСЛИ ВСЕ СКАЗАНЫ — БЕРЕМ СЛУЧАЙНЫЙ (начинаем сначала)
             randomIndex =
                 DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
           }
@@ -275,7 +256,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             "Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}",
           );
 
-          // 👇 СОХРАНЯЕМ ИНДЕКС В ЛОКАЛЬНЫЙ СПИСОК
+          // 👇 СОХРАНЯЕМ ИНДЕКС В ЛОКАЛЬНЫЙ СПИСОК (для текущей пробежки)
           if (randomIndex != null) {
             _lastFactIndices.add(randomIndex);
           }
@@ -344,10 +325,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _saveRunSession() async {
-    // 👇 ДОБАВИТЬ _lastFactIndices к сказанным индексам
-    final allSpokenIndices = RunRepository().getAllSpokenFactIndices();
-    allSpokenIndices.addAll(_lastFactIndices);
-
+    // 👇 СОХРАНЯЕМ ТЕКУЩИЕ ИНДЕКСЫ В СЕССИЮ (не добавляем к истории)
     final session = RunSession(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       date: DateTime.now(),
@@ -355,8 +333,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       duration: _runEndTime!.difference(_runStartTime!).inSeconds,
       factsCount: _factsCount,
       route: _route,
-      spokenFactIndices: allSpokenIndices
-          .toList(), // 👈 СОХРАНЯЕМ ВСЕ СКАЗАННЫЕ
+      spokenFactIndices: _lastFactIndices
+          .toList(), // 👈 Сохраняем локальные индексы
     );
 
     await RunRepository().saveSession(session);
