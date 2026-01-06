@@ -1,47 +1,47 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
-part of 'run_session.dart';
+part of 'fact.dart';
 
 // **************************************************************************
 // TypeAdapterGenerator
 // **************************************************************************
 
-class RunSessionAdapter extends TypeAdapter<RunSession> {
+class FactAdapter extends TypeAdapter<Fact> {
   @override
-  final int typeId = 1;
+  final int typeId = 2;
 
   @override
-  RunSession read(BinaryReader reader) {
+  Fact read(BinaryReader reader) {
     final numOfFields = reader.readByte();
     final fields = <int, dynamic>{
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
-    return RunSession(
+    return Fact(
       id: fields[0] as String,
-      date: fields[1] as DateTime,
-      distance: fields[2] as double,
-      duration: fields[3] as int,
-      factsCount: fields[4] as int,
-      route: (fields[5] as List).cast<RoutePoint>(),
+      text: fields[1] as String,
+      type: fields[2] as String,
+      landmarkId: fields[3] as String?,
+      consumedAt: fields[4] as DateTime?,
+      createdAt: fields[5] as DateTime,
     );
   }
 
   @override
-  void write(BinaryWriter writer, RunSession obj) {
+  void write(BinaryWriter writer, Fact obj) {
     writer
       ..writeByte(6)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
-      ..write(obj.date)
+      ..write(obj.text)
       ..writeByte(2)
-      ..write(obj.distance)
+      ..write(obj.type)
       ..writeByte(3)
-      ..write(obj.duration)
+      ..write(obj.landmarkId)
       ..writeByte(4)
-      ..write(obj.factsCount)
+      ..write(obj.consumedAt)
       ..writeByte(5)
-      ..write(obj.route);
+      ..write(obj.createdAt);
   }
 
   @override
@@ -50,7 +50,7 @@ class RunSessionAdapter extends TypeAdapter<RunSession> {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is RunSessionAdapter &&
+      other is FactAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

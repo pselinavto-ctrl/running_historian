@@ -1,10 +1,9 @@
 import 'package:hive/hive.dart';
-import 'package:geolocator/geolocator.dart';
 
 part 'route_point.g.dart';
 
-@HiveType(typeId: 1)
-class RoutePoint {
+@HiveType(typeId: 2)
+class RoutePoint extends HiveObject {
   @HiveField(0)
   final double lat;
 
@@ -20,7 +19,7 @@ class RoutePoint {
     required this.timestamp,
   });
 
-  factory RoutePoint.fromPosition(Position position) {
+  factory RoutePoint.fromPosition(position) {
     return RoutePoint(
       lat: position.latitude,
       lon: position.longitude,

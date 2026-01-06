@@ -2,13 +2,22 @@ import 'package:hive/hive.dart';
 import '../domain/run_session.dart';
 
 class RunRepository {
-  static final Box<RunSession> _box = Hive.box<RunSession>('runs');
+  final Box<RunSession> box = Hive.box<RunSession>('runs');
 
   Future<void> saveSession(RunSession session) async {
-    await _box.put(session.id, session);
+    await box.put(session.id, session); // теперь сохраняет spokenFactIndices
   }
 
   List<RunSession> getHistory() {
-    return _box.values.toList();
+    return box.values.toList();
+  }
+
+  // 👇 НОВОЕ: получить все сказанные индексы
+  Set<int> getAllSpokenFactIndices() {
+    final allIndices = <int>{};
+    for (final session in box.values) {
+      allIndices.addAll(session.spokenFactIndices);
+    }
+    return allIndices;
   }
 }
