@@ -33,6 +33,8 @@ void onStart(ServiceInstance service) async {
     service.stopSelf();
   });
 
+  Position? last;
+
   // GPS
   Geolocator.getPositionStream(
     locationSettings: const LocationSettings(
@@ -40,10 +42,26 @@ void onStart(ServiceInstance service) async {
       distanceFilter: 10,
     ),
   ).listen((position) {
+    // 👇 ФИЛЬТРАЦИЯ В ФОНЕ (архитектурно правильно)
+    if (position.accuracy > 25) return;
+
+    if (last != null) {
+      final d = Geolocator.distanceBetween(
+        last!.latitude,
+        last!.longitude,
+        position.latitude,
+        position.longitude,
+      );
+      if (d > 50) return;
+    }
+
+    last = position;
+
     service.invoke('locationUpdate', {
       'lat': position.latitude,
       'lon': position.longitude,
       'timestamp': position.timestamp?.toIso8601String(),
+      'speed': position.speed,
     });
   });
 
