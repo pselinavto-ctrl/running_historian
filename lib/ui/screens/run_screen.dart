@@ -19,6 +19,7 @@ import 'package:running_historian/services/facts_service.dart';
 import 'package:running_historian/ui/widgets/compass_marker.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:running_historian/services/background_service.dart';
+import 'dart:math' as math;
 
 class RunScreen extends StatefulWidget {
   const RunScreen({super.key});
@@ -40,9 +41,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   List<RoutePoint> _route = [];
   DateTime? _runStartTime;
   DateTime? _runEndTime;
-  int _factsCount = 0;
-  double _distance = 0.0;
-  final List<String> _shownFacts = [];
+  int _factsCount = 0; // 👈 Счётчик фактов
+  double _distance = 0.0; // 👈 Расстояние в км
+  double _totalDistanceInMeters = 0.0; // 👈 Расстояние в метрах (для точности)
   List<RunSession> _history = [];
   MusicMode _musicMode = MusicMode.external;
   DateTime? _lastFactTime;
@@ -51,6 +52,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
   // 👇 НОВОЕ: список сказанных индексов (локально)
   final Set<int> _lastFactIndices = <int>{};
+
+  // 👇 НОВОЕ: время последнего движения камеры
+  DateTime? _lastCameraMove;
+
+  // 👇 НОВОЕ: буфер сглаживания
+  final List<RoutePoint> _smoothBuffer = [];
 
   // Анимации
   late AnimationController _distanceController;
@@ -139,7 +146,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       _currentPosition = position;
     });
 
-    // 4. СРАЗУ ЦЕНТРИРУЕМ КАРТУ
+    // 4. СРАЗИУ ЦЕНТРИРУЕМ КАРТУ
     _mapController.move(LatLng(position.latitude, position.longitude), 15);
 
     // 5. СТАРТУЕМ STREAM
@@ -173,21 +180,74 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
       setState(() {
         _currentPosition = position;
-        _heading = position.heading ?? 0.0; // Сохраняем направление
+        // 👇 ИСПРАВЛЕНО: дёргание компаса при низкой скорости
+        _heading = position.speed > 0.5 ? position.heading : _heading;
 
         if (_isRunning && !_isPaused) {
-          _route.add(RoutePoint.fromPosition(position));
+          // 👇 ИСПРАВЛЕНО: дублирующийся RoutePoint при стоянии
+          if (_route.isNotEmpty) {
+            final last = _route.last;
+            final dist = Geolocator.distanceBetween(
+              last.lat,
+              last.lon,
+              position.latitude,
+              position.longitude,
+            );
+            if (dist < 3) return;
+          }
+
+          // 👇 СГЛАЖИВАНИЕ КООРДИНАТ
+          final smoothed = _getSmoothedPoint(RoutePoint.fromPosition(position));
+          _route.add(
+            RoutePoint(
+              lat: smoothed.latitude,
+              lon: smoothed.longitude,
+              timestamp: position.timestamp,
+              speed: position.speed ?? 0.0,
+            ),
+          );
+
           _calculateDistance();
           _checkProximity(position);
         }
       });
 
-      // 👇 Приближаем карту до масштаба 17 (очень близко)
-      _mapController.move(
-        LatLng(position.latitude, position.longitude),
-        17, // Был 15 → стал 17
-      );
+      // 👇 ПЛАВНОЕ ДВИЖЕНИЕ КАМЕРЫ (смещение вперёд)
+      _moveCamera(position);
     });
+  }
+
+  // 👇 НОВОЕ: сглаживание координат
+  LatLng _getSmoothedPoint(RoutePoint point) {
+    _smoothBuffer.add(point);
+    if (_smoothBuffer.length > 5) {
+      _smoothBuffer.removeAt(0);
+    }
+
+    final lat =
+        _smoothBuffer.map((p) => p.lat).reduce((a, b) => a + b) /
+        _smoothBuffer.length;
+    final lon =
+        _smoothBuffer.map((p) => p.lon).reduce((a, b) => a + b) /
+        _smoothBuffer.length;
+
+    return LatLng(lat, lon);
+  }
+
+  void _moveCamera(Position position) {
+    final now = DateTime.now();
+    if (_lastCameraMove == null ||
+        now.difference(_lastCameraMove!) > const Duration(seconds: 3)) {
+      // 👇 СМЕЩЕНИЕ КАМЕРЫ ВПЕРЁД ПО НАПРАВЛЕНИЮ
+      final offset = 0.0003;
+      final target = LatLng(
+        position.latitude + offset * math.cos(_heading * math.pi / 180),
+        position.longitude + offset * math.sin(_heading * math.pi / 180),
+      );
+
+      _mapController.move(target, 17);
+      _lastCameraMove = now;
+    }
   }
 
   void _calculateDistance() {
@@ -206,8 +266,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       );
     }
 
+    // 👇 СЧИТАЕМ В МЕТРАХ ДЛЯ ТОЧНОСТИ
     setState(() {
-      _distance += lastDistance / 1000;
+      _totalDistanceInMeters += lastDistance;
+      _distance = _totalDistanceInMeters / 1000;
     });
     _distanceController.reset();
     _distanceController.forward();
@@ -256,6 +318,11 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             "Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}",
           );
 
+          // 👇 УВЕЛИЧИВАЕМ СЧЁТЧИК ФАКТОВ
+          setState(() {
+            _factsCount++;
+          });
+
           // 👇 СОХРАНЯЕМ ИНДЕКС В ЛОКАЛЬНЫЙ СПИСОК (для текущей пробежки)
           if (randomIndex != null) {
             _lastFactIndices.add(randomIndex);
@@ -263,6 +330,11 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         }
       }
     });
+  }
+
+  // 👇 НОВОЕ: голосовая подсказка для кнопок
+  void _speakButtonAction(String text) {
+    _tts.speak(text);
   }
 
   void _startRun() async {
@@ -275,19 +347,26 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         _showResults = false;
         _runStartTime = DateTime.now();
         _route = [];
-        _factsCount = 0;
+        _factsCount = 0; // 👈 СБРОС СЧЁТЧИКА
         _distance = 0.0;
-        _shownFacts.clear();
+        _totalDistanceInMeters = 0.0; // 👈 СБРОС РАССТОЯНИЯ
         _lastFactTime = null;
         _isPaused = false;
         // 👇 ОЧИЩАЕМ список индексов
         _lastFactIndices.clear();
+        // 👇 СБРОС ВРЕМЕНИ КАМЕРЫ
+        _lastCameraMove = null;
+        // 👇 СБРОС БУФЕРА СГЛАЖИВАНИЯ
+        _smoothBuffer.clear();
       });
     }
 
     _startLocationUpdates();
     _audio.playMusic(_musicMode);
     _startGeneralFacts();
+
+    // 👇 ГОЛОСОВАЯ ПОДСКАЗКА
+    _speakButtonAction("Тренировка началась");
   }
 
   void _stopRun() {
@@ -306,6 +385,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _audio.stopMusic();
     _factsTimer?.cancel();
     _saveRunSession();
+
+    // 👇 ГОЛОСОВАЯ ПОДСКАЗКА
+    _speakButtonAction("Тренировка окончена");
   }
 
   void _pauseRun() {
@@ -314,6 +396,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         _isPaused = true;
       });
     }
+
+    // 👇 ГОЛОСОВАЯ ПОДСКАЗКА
+    _speakButtonAction("Тренировка на паузе");
   }
 
   void _resumeRun() {
@@ -322,6 +407,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         _isPaused = false;
       });
     }
+
+    // 👇 ГОЛОСОВАЯ ПОДСКАЗКА
+    _speakButtonAction("Тренировка продолжается");
   }
 
   Future<void> _saveRunSession() async {
@@ -332,7 +420,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       distance: _distance,
       duration: _runEndTime!.difference(_runStartTime!).inSeconds,
       factsCount: _factsCount,
-      route: _route,
+      route: _route, // 👈 Сохраняем оригинальный маршрут с скоростью
       spokenFactIndices: _lastFactIndices
           .toList(), // 👈 Сохраняем локальные индексы
     );
@@ -348,6 +436,35 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     print("💾 Сессия сохранена: $_distance км, $_factsCount фактов");
   }
 
+  // 👇 НОВОЕ: градиентный трек
+  List<Polyline> _buildSpeedPolylines() {
+    final polylines = <Polyline>[];
+
+    for (int i = 1; i < _route.length; i++) {
+      final p1 = _route[i - 1];
+      final p2 = _route[i];
+
+      Color color;
+      if (p1.speed < 2) {
+        color = Colors.blue;
+      } else if (p1.speed < 5) {
+        color = const Color(0xFF9C27B0); // фиолетовый
+      } else {
+        color = Colors.red;
+      }
+
+      polylines.add(
+        Polyline(
+          points: [LatLng(p1.lat, p1.lon), LatLng(p2.lat, p2.lon)],
+          strokeWidth: 5,
+          color: color,
+        ),
+      );
+    }
+
+    return polylines;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_showResults) {
@@ -358,14 +475,15 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text('Дистанция: ${_distance.toStringAsFixed(2)} км'),
-              Text('Факты: $_factsCount'),
+              Text('Факты: $_factsCount'), // 👈 СЕЙЧАС УВЕЛИЧИВАЕТСЯ
               ElevatedButton(
                 onPressed: () {
                   setState(() {
                     _showResults = false; // Возвращаемся к карте
                   });
+                  _startRun(); // 👈 Начинаем новую тренировку
                 },
-                child: const Text('Продолжить'),
+                child: const Text('Новая тренировка'),
               ),
             ],
           ),
@@ -430,17 +548,14 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             children: [
               TileLayer(
                 urlTemplate:
-                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png', // Исправленный URL
+                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png', // 👈 ОРИГИНАЛЬНЫЕ ТАЙЛЫ
                 userAgentPackageName: 'com.example.running_historian',
               ),
               if (_route.isNotEmpty)
                 PolylineLayer(
                   polylines: [
-                    Polyline(
-                      points: _route.map((p) => LatLng(p.lat, p.lon)).toList(),
-                      color: const Color(0xFF9C27B0),
-                      strokeWidth: 8,
-                    ),
+                    // 👇 ГРАДИЕНТНЫЙ ТРЕК
+                    ..._buildSpeedPolylines(),
                   ],
                 ),
               if (_currentPosition != null)
@@ -453,9 +568,14 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                       ),
                       width: 50,
                       height: 50,
-                      child: CompassMarker(
-                        rotation: _heading,
-                      ), // 👈 Используем стрелку
+                      child: Transform.rotate(
+                        angle: _heading * math.pi / 180, // 👈 НАПРАВЛЕНИЕ
+                        child: Icon(
+                          Icons.navigation,
+                          color: Colors.deepPurple,
+                          size: 28,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -473,6 +593,23 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         ),
                         child: const Icon(
                           Icons.fiber_manual_record,
+                          color: Colors.white,
+                          size: 16,
+                        ),
+                      ),
+                    ),
+                    // 👇 МАРКЕР ФИНИША
+                    Marker(
+                      point: LatLng(_route.last.lat, _route.last.lon),
+                      width: 30,
+                      height: 30,
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.flag,
                           color: Colors.white,
                           size: 16,
                         ),
