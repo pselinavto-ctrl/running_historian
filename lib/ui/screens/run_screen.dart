@@ -219,6 +219,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _factController.dispose();
     _tts.dispose();
     _audio.dispose();
+
+    // ОСТАНОВИТЬ СЕРВИС ТОЛЬКО ПРИ УНИЧТОЖЕНИИ ВИДЖЕТА
+    FlutterBackgroundService().invoke('stopService');
+
     super.dispose();
   }
 
@@ -230,7 +234,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _onBackgroundLocation(dynamic data) {
-    print('Получено новое местоположение: $data');
+    // print('Получено новое местоположение: $data'); // Лог для проверки
 
     if (!mounted) return;
 
@@ -255,8 +259,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       _currentPosition = position;
       _heading = newHeading;
 
+      // ИСПРАВЛЕНО: проверяем на searchingGps, чтобы сбросить состояние при новой тренировке
       if (_state == RunState.searchingGps) {
-        _state = RunState.ready;
+        _state = RunState
+            .ready; // Переходим в ready при получении первого обновления
         _mapController.move(LatLng(position.latitude, position.longitude), 15);
       }
 
@@ -436,8 +442,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _stopRun() {
-    FlutterBackgroundService().invoke('stopService');
-
+    // FlutterBackgroundService().invoke('stopService'); // УДАЛЕНО - НЕ ОСТАНАВЛИВАЕМ СЕРВИС
     _runTicker?.cancel();
 
     if (mounted) {
@@ -1042,7 +1047,19 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                     onPressed: () {
                       setState(() {
                         _state = RunState.searchingGps;
-                        _startPoint = null;
+                        _route.clear(); // ✅ ОЧИСТИТЬ МАРШРУТ
+                        _startPoint = null; // ✅ СБРОС СТАРТОВОЙ ТОЧКИ
+                        _distance = 0.0; // ✅ СБРОС РАССТОЯНИЯ
+                        _totalDistanceInMeters = 0.0; // ✅ СБРОС РАССТОЯНИЯ
+                        _elapsedRunTime = Duration.zero; // ✅ СБРОС ВРЕМЕНИ
+                        _factsCount = 0; // ✅ СБРОС ФАКТОВ
+                        _lastFactTime =
+                            null; // ✅ СБРОС ВРЕМЕНИ ПОСЛЕДНЕГО ФАКТА
+                        _lastFactIndices
+                            .clear(); // ✅ ОЧИСТИТЬ СПИСОК СКАЗАННЫХ ИНДЕКСОВ
+                        _lastCameraMove =
+                            null; // ✅ СБРОС ВРЕМЕНИ ДВИЖЕНИЯ КАМЕРЫ
+                        // НЕ ПЕРЕЗАПУСКАЕМ СЕРВИС - он продолжает работать
                       });
                     },
                     style: ElevatedButton.styleFrom(
