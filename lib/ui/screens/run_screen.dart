@@ -3,23 +3,22 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
-import 'package:running_historian/services/location_service.dart';
+import 'dart:math' as math;
 import 'package:running_historian/domain/route_point.dart';
 import 'package:running_historian/domain/run_session.dart';
 import 'package:running_historian/storage/run_repository.dart';
-import 'package:running_historian/ui/widgets/run_controls.dart';
 import 'package:running_historian/config/constants.dart';
 import 'package:running_historian/services/tts_service.dart';
 import 'package:running_historian/services/audio_service.dart';
 import 'package:running_historian/domain/landmark.dart';
 import 'package:running_historian/ui/screens/history_screen.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:running_historian/services/facts_service.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:running_historian/services/background_service.dart';
-import 'dart:math' as math;
+import 'package:running_historian/services/facts_service.dart';
+import 'package:running_historian/ui/screens/session_detail_screen.dart';
+import 'package:permission_handler/permission_handler.dart';
 
-// 👇 СТЕЙТ-МАШИНА
+// Стейт-машина
 enum RunState {
   init,
   searchingGps,
@@ -42,18 +41,14 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   Position? _currentPosition;
   StreamSubscription? _backgroundLocationSubscription;
   Timer? _factsTimer;
-  
-  // 👇 НОВЫЙ ТАЙМЕР ДЛЯ СИНХРОНИЗАЦИИ
   Timer? _runTicker;
   Duration _elapsedRunTime = Duration.zero;
-  
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService;
   List<RoutePoint> _route = [];
   DateTime? _runStartTime;
-  DateTime? _pauseStartTime;
-  Duration _totalRunTime = Duration.zero;
+  RunSession? _currentSession;
   int _factsCount = 0;
   double _distance = 0.0;
   double _totalDistanceInMeters = 0.0;
@@ -62,16 +57,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   DateTime? _lastFactTime;
   double _heading = 0.0;
   LatLng? _startPoint;
-
   final Set<int> _lastFactIndices = <int>{};
   DateTime? _lastCameraMove;
   final List<RoutePoint> _smoothBuffer = [];
-
-  RunState _state = RunState.init;
-
+  RunState _state = RunState.searchingGps;
   Timer? _countdownTimer;
   int _countdown = 3;
-
   late AnimationController _distanceController;
   late Animation<double> _distanceAnimation;
   late AnimationController _factController;
@@ -84,14 +75,121 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _factsService = FactsService(_tts);
     _initAnimations();
     _loadHistory();
+    _requestLocationPermissionAndStart();
+  }
+
+  // Метод для запроса разрешений и запуска сервиса
+  Future<void> _requestLocationPermissionAndStart() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      await Geolocator.openLocationSettings();
+      serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _showErrorAndReturn(
+          'Служба геолокации отключена. Приложение не сможет отслеживать ваш маршрут.',
+        );
+        return;
+      }
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      _showErrorAndReturn(
+        'Разрешение на геолокацию отклонено навсегда. Пожалуйста, предоставьте его в настройках приложения.',
+      );
+      return;
+    }
+
+    if (permission != LocationPermission.always &&
+        permission != LocationPermission.whileInUse) {
+      _showErrorAndReturn(
+        'Разрешение на геолокацию не предоставлено. Приложение не сможет отслеживать ваш маршрут.',
+      );
+      return;
+    }
+
+    // Запрос разрешения на уведомления (для Android 13+)
+    var notificationPermission = await Permission.notification.status;
+    if (notificationPermission.isDenied) {
+      notificationPermission = await Permission.notification.request();
+      if (notificationPermission.isDenied) {
+        _showErrorAndReturn(
+          'Для работы фонового сервиса требуется разрешение на уведомления.',
+        );
+        return;
+      }
+    }
+
+    _startBackgroundService();
     _initBackgroundListener();
-    _startSearchingGps();
+    _attemptToGetCurrentLocation();
+  }
+
+  void _startBackgroundService() async {
+    await initBackgroundService();
+    bool started = await FlutterBackgroundService().startService();
+    print('SERVICE STARTED = $started');
+
+    if (started) {
+      final isRunning = await FlutterBackgroundService().isRunning();
+      print('SERVICE RUNNING = $isRunning');
+    } else {
+      print('FAILED TO START SERVICE');
+    }
   }
 
   void _initBackgroundListener() {
     _backgroundLocationSubscription = FlutterBackgroundService()
         .on('locationUpdate')
         .listen(_onBackgroundLocation);
+    print('Подписка на фоновое обновление местоположения установлена');
+  }
+
+  Future<void> _attemptToGetCurrentLocation() async {
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.best,
+      );
+      if (mounted) {
+        setState(() {
+          _currentPosition = position;
+          _mapController.move(
+            LatLng(position.latitude, position.longitude),
+            15,
+          );
+        });
+      }
+    } catch (e) {
+      print('Не удалось получить текущую позицию: $e');
+    }
+  }
+
+  void _showErrorAndReturn(String message) {
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Геолокация'),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                if (Navigator.canPop(context)) {
+                  Navigator.pop(context);
+                }
+              },
+              child: const Text('ОК'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   void _initAnimations() {
@@ -111,6 +209,19 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _factAnimation = Tween<double>(begin: 0, end: 1).animate(_factController);
   }
 
+  @override
+  void dispose() {
+    _backgroundLocationSubscription?.cancel();
+    _factsTimer?.cancel();
+    _runTicker?.cancel();
+    _countdownTimer?.cancel();
+    _distanceController.dispose();
+    _factController.dispose();
+    _tts.dispose();
+    _audio.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadHistory() async {
     _history = await RunRepository().getHistory();
     if (mounted) {
@@ -118,56 +229,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _startSearchingGps() async {
-    setState(() {
-      _state = RunState.searchingGps;
-    });
-
-    try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        await Geolocator.openLocationSettings();
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied) {
-        _showError('Без геолокации приложение не работает');
-        return;
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        _showError('Разрешите геолокацию в настройках');
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
-      );
-
-      if (!mounted) return;
-
-      setState(() {
-        _currentPosition = position;
-        _state = RunState.ready;
-        _startPoint = null;
-      });
-
-      _mapController.move(LatLng(position.latitude, position.longitude), 15);
-    } catch (e) {
-      print('Ошибка при поиске GPS: $e');
-      setState(() {
-        _state = RunState.init;
-      });
-    }
-  }
-
   void _onBackgroundLocation(dynamic data) {
+    print('Получено новое местоположение: $data');
+
     if (!mounted) return;
+
+    final double newHeading = (data['heading'] as num?)?.toDouble() ?? _heading;
 
     final position = Position(
       latitude: data['lat'],
@@ -177,8 +244,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
           : DateTime.now(),
       accuracy: 5,
       altitude: 0,
-      heading: _heading,
-      speed: data['speed'] ?? 0,
+      heading: newHeading,
+      speed: (data['speed'] as num?)?.toDouble() ?? 0,
       speedAccuracy: 0,
       altitudeAccuracy: 0,
       headingAccuracy: 0,
@@ -186,6 +253,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
     setState(() {
       _currentPosition = position;
+      _heading = newHeading;
+
+      if (_state == RunState.searchingGps) {
+        _state = RunState.ready;
+        _mapController.move(LatLng(position.latitude, position.longitude), 15);
+      }
 
       if (_state == RunState.running) {
         _route.add(RoutePoint.fromPosition(position));
@@ -259,11 +332,11 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
   void _startGeneralFacts() {
     _factsTimer?.cancel();
-    _factsTimer = Timer.periodic(Duration(minutes: kFactsIntervalMinutes), (timer) {
+    _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) {
       if (_state == RunState.running && _route.length > 5) {
         final now = DateTime.now();
         if (_lastFactTime == null ||
-            now.difference(_lastFactTime!) >= Duration(minutes: kMinIntervalBetweenFacts)) {
+            now.difference(_lastFactTime!) >= const Duration(minutes: 3)) {
           _lastFactTime = now;
 
           final allSpokenIndices = RunRepository().getAllSpokenFactIndices();
@@ -277,12 +350,17 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
           int? randomIndex;
           if (availableIndices.isNotEmpty) {
-            randomIndex = availableIndices[DateTime.now().millisecondsSinceEpoch % availableIndices.length];
+            randomIndex =
+                availableIndices[DateTime.now().millisecondsSinceEpoch %
+                    availableIndices.length];
           } else {
-            randomIndex = DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
+            randomIndex =
+                DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
           }
 
-          _tts.speak("Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}");
+          _tts.speak(
+            "Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}",
+          );
 
           setState(() {
             _factsCount++;
@@ -319,16 +397,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _startRun() async {
-    await initBackgroundService();
-    FlutterBackgroundService().startService();
-
     if (mounted) {
       setState(() {
         _state = RunState.running;
         _runStartTime = DateTime.now();
-        _pauseStartTime = null;
-        _totalRunTime = Duration.zero;
-        _elapsedRunTime = Duration.zero; // 👈 СБРАСЫВАЕМ ВРЕМЯ
         _route = [];
         _factsCount = 0;
         _distance = 0.0;
@@ -337,7 +409,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         _lastFactIndices.clear();
         _lastCameraMove = null;
         _smoothBuffer.clear();
-        
+        _elapsedRunTime = Duration.zero;
+
         if (_currentPosition != null) {
           _startPoint = LatLng(
             _currentPosition!.latitude,
@@ -347,7 +420,6 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       });
     }
 
-    // 👇 ЗАПУСКАЕМ СИНХРОНИЗИРОВАННЫЙ ТАЙМЕР
     _runTicker?.cancel();
     _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _state == RunState.running) {
@@ -359,14 +431,13 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
     _audio.playMusic(_musicMode);
     _startGeneralFacts();
-    
+
     _speakButtonAction("Тренировка началась");
   }
 
   void _stopRun() {
     FlutterBackgroundService().invoke('stopService');
 
-    // 👇 ОСТАНАВЛИВАЕМ ТАЙМЕР
     _runTicker?.cancel();
 
     if (mounted) {
@@ -374,29 +445,39 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         _state = RunState.finished;
       });
     }
+
     _audio.stopMusic();
     _factsTimer?.cancel();
     _saveRunSession();
-    
+
     _speakButtonAction("Тренировка окончена");
+
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted && _currentSession != null) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) =>
+                SessionDetailScreen(session: _currentSession!),
+          ),
+        );
+      }
+    });
   }
 
   void _pauseRun() {
-    // 👇 ОСТАНАВЛИВАЕМ ТАЙМЕР
     _runTicker?.cancel();
 
     if (mounted) {
       setState(() {
         _state = RunState.paused;
-        _pauseStartTime = DateTime.now();
       });
     }
-    
+
     _speakButtonAction("Тренировка на паузе");
   }
 
   void _resumeRun() {
-    // 👇 ВОЗОБНОВЛЯЕМ ТАЙМЕР
     _runTicker?.cancel();
     _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _state == RunState.running) {
@@ -409,13 +490,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     if (mounted) {
       setState(() {
         _state = RunState.running;
-        if (_pauseStartTime != null) {
-          _totalRunTime += DateTime.now().difference(_pauseStartTime!);
-          _pauseStartTime = null;
-        }
       });
     }
-    
+
     _speakButtonAction("Тренировка продолжается");
   }
 
@@ -424,11 +501,13 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       date: DateTime.now(),
       distance: _distance,
-      duration: _elapsedRunTime.inSeconds, // 👈 ИСПОЛЬЗУЕМ СИНХРОНИЗИРОВАННОЕ ВРЕМЯ
+      duration: _elapsedRunTime.inSeconds,
       factsCount: _factsCount,
       route: _route,
       spokenFactIndices: _lastFactIndices.toList(),
     );
+
+    _currentSession = session;
 
     await RunRepository().saveSession(session);
 
@@ -438,15 +517,34 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       });
     }
 
-    print("💾 Сессия сохранена: $_distance км, ${_elapsedRunTime.inSeconds} сек, $_factsCount фактов");
+    print("💾 Сессия сохранена: $_distance км, $_factsCount фактов");
+  }
+
+  String get _currentPace {
+    if (_distance <= 0) return '--';
+
+    final secondsPerKm = _elapsedRunTime.inSeconds / _distance;
+    final minutes = (secondsPerKm / 60).floor();
+    final seconds = (secondsPerKm % 60).round();
+
+    return '$minutes:${seconds.toString().padLeft(2, "0")}';
+  }
+
+  double _calculateCalories() {
+    const double weightKg = 75;
+    const double metRunning = 9.8;
+
+    final hours = _elapsedRunTime.inSeconds / 3600;
+    return metRunning * weightKg * hours;
   }
 
   List<Polyline> _buildSpeedPolylines() {
     final polylines = <Polyline>[];
+    final smoothedRoute = _smoothRoute(_route, 5);
 
-    for (int i = 1; i < _route.length; i++) {
-      final p1 = _route[i - 1];
-      final p2 = _route[i];
+    for (int i = 1; i < smoothedRoute.length; i++) {
+      final p1 = smoothedRoute[i - 1];
+      final p2 = smoothedRoute[i];
 
       Color color;
       if (p1.speed < 2) {
@@ -459,10 +557,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
       polylines.add(
         Polyline(
-          points: [
-            LatLng(p1.lat, p1.lon),
-            LatLng(p2.lat, p2.lon),
-          ],
+          points: [LatLng(p1.lat, p1.lon), LatLng(p2.lat, p2.lon)],
           strokeWidth: 5,
           color: color,
         ),
@@ -472,45 +567,48 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     return polylines;
   }
 
-  // 👇 ПРАВИЛЬНЫЙ РАСЧЁТ ТЕМПА
-  String get _currentPace {
-    if (_distance <= 0) return '--';
-    
-    final secondsPerKm = _elapsedRunTime.inSeconds / _distance;
-    final minutes = (secondsPerKm / 60).floor();
-    final seconds = (secondsPerKm % 60).round();
-    
-    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  List<RoutePoint> _smoothRoute(List<RoutePoint> route, int windowSize) {
+    if (route.length < windowSize) return route;
+
+    final smoothed = <RoutePoint>[];
+    final halfWindow = windowSize ~/ 2;
+
+    for (int i = 0; i < route.length; i++) {
+      double latSum = 0;
+      double lonSum = 0;
+      int count = 0;
+
+      for (int j = -halfWindow; j <= halfWindow; j++) {
+        final idx = i + j;
+        if (idx >= 0 && idx < route.length) {
+          latSum += route[idx].lat;
+          lonSum += route[idx].lon;
+          count++;
+        }
+      }
+
+      smoothed.add(
+        RoutePoint(
+          lat: latSum / count,
+          lon: lonSum / count,
+          timestamp: route[i].timestamp,
+          speed: route[i].speed,
+        ),
+      );
+    }
+
+    return smoothed;
   }
 
-  // 👇 РЕАЛИСТИЧНЫЙ РАСЧЁТ КАЛОРИЙ
-  double _calculateCalories() {
-    const double weightKg = 75; // можно сделать настройкой позже
-    const double metRunning = 9.8; // бег 8–9 км/ч
-    
-    final hours = _elapsedRunTime.inSeconds / 3600;
-    return metRunning * weightKg * hours;
-  }
-
-  @override
-  void dispose() {
-    _backgroundLocationSubscription?.cancel();
-    _factsTimer?.cancel();
-    _countdownTimer?.cancel();
-    _runTicker?.cancel(); // 👈 ОТМЕНА НОВОГО ТАЙМЕРА
-    _distanceController.dispose();
-    _factController.dispose();
-    _tts.dispose();
-    _audio.dispose();
-    super.dispose();
+  Duration _getCurrentRunTime() {
+    return _elapsedRunTime;
   }
 
   @override
   Widget build(BuildContext context) {
-    final currentDistance = _distance;
-    final currentPace = _currentPace; // 👈 ИСПОЛЬЗУЕМ СИНХРОНИЗИРОВАННЫЙ ТЕМП
-    final currentCalories = _calculateCalories().round(); // 👈 ПРАВИЛЬНЫЙ РАСЧЁТ КАЛОРИЙ
-    final currentRunTime = _elapsedRunTime; // 👈 ИСПОЛЬЗУЕМ СИНХРОНИЗИРОВАННОЕ ВРЕМЯ
+    final currentRunTime = _getCurrentRunTime();
+    final currentPace = _currentPace;
+    final currentCalories = _calculateCalories().round();
 
     return Scaffold(
       appBar: AppBar(
@@ -568,16 +666,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
             ),
             children: [
               TileLayer(
-                urlTemplate:
-                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.running_historian',
               ),
-              if ((_state == RunState.running || _state == RunState.finished) && _route.isNotEmpty)
-                PolylineLayer(
-                  polylines: [
-                    ..._buildSpeedPolylines(),
-                  ],
-                ),
+              if ((_state == RunState.running || _state == RunState.finished) &&
+                  _route.isNotEmpty)
+                PolylineLayer(polylines: [..._buildSpeedPolylines()]),
               if (_currentPosition != null)
                 MarkerLayer(
                   markers: [
@@ -599,7 +693,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                     ),
                   ],
                 ),
-              if (_state != RunState.init && _startPoint != null && _state != RunState.searchingGps)
+              if (_state != RunState.init &&
+                  _startPoint != null &&
+                  _state != RunState.searchingGps)
                 MarkerLayer(
                   markers: [
                     Marker(
@@ -686,8 +782,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         Icon(Icons.route, color: Colors.white, size: 30),
                         const SizedBox(width: 8),
                         Text(
-                          currentDistance.toStringAsFixed(2),
-                          style: const TextStyle(
+                          _distance.toStringAsFixed(2),
+                          style: TextStyle(
                             fontSize: 32,
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
@@ -696,10 +792,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         const SizedBox(width: 4),
                         const Text(
                           'км',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.white,
-                          ),
+                          style: TextStyle(fontSize: 16, color: Colors.white),
                         ),
                       ],
                     ),
@@ -709,11 +802,11 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                       children: [
                         Column(
                           children: [
-                            const Icon(Icons.access_time, color: Colors.white),
+                            Icon(Icons.access_time, color: Colors.white),
                             const SizedBox(height: 4),
                             Text(
                               '${currentRunTime.inMinutes.remainder(60).toString().padLeft(2, '0')}:${(currentRunTime.inSeconds.remainder(60)).toString().padLeft(2, '0')}',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w500,
                                 color: Colors.white,
@@ -730,11 +823,11 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         ),
                         Column(
                           children: [
-                            const Icon(Icons.speed, color: Colors.white),
+                            Icon(Icons.speed, color: Colors.white),
                             const SizedBox(height: 4),
                             Text(
                               currentPace,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w500,
                                 color: Colors.white,
@@ -751,11 +844,14 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         ),
                         Column(
                           children: [
-                            const Icon(Icons.local_fire_department, color: Colors.white),
+                            Icon(
+                              Icons.local_fire_department,
+                              color: Colors.white,
+                            ),
                             const SizedBox(height: 4),
                             Text(
                               currentCalories.toString(),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w500,
                                 color: Colors.white,
@@ -918,7 +1014,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                             borderRadius: BorderRadius.circular(12),
                           ),
                         ),
-                        child: const Text('Resume', style: TextStyle(fontSize: 18)),
+                        child: const Text(
+                          'Resume',
+                          style: TextStyle(fontSize: 18),
+                        ),
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton(
@@ -931,7 +1030,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                             borderRadius: BorderRadius.circular(12),
                           ),
                         ),
-                        child: const Text('Stop', style: TextStyle(fontSize: 18)),
+                        child: const Text(
+                          'Stop',
+                          style: TextStyle(fontSize: 18),
+                        ),
                       ),
                     ],
                   ),
@@ -941,7 +1043,6 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                       setState(() {
                         _state = RunState.searchingGps;
                         _startPoint = null;
-                        _startSearchingGps();
                       });
                     },
                     style: ElevatedButton.styleFrom(
@@ -952,7 +1053,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    child: const Text('Новая тренировка', style: TextStyle(fontSize: 20)),
+                    child: const Text(
+                      'Новая тренировка',
+                      style: TextStyle(fontSize: 20),
+                    ),
                   ),
               ],
             ),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:geolocator/geolocator.dart';
@@ -17,13 +18,19 @@ Future<void> initBackgroundService() async {
       initialNotificationContent: 'Аудиогид работает',
       foregroundServiceNotificationId: 777,
     ),
-    iosConfiguration: IosConfiguration(autoStart: false, onForeground: onStart),
+    iosConfiguration: IosConfiguration(
+      autoStart: false,
+      onForeground: onStart,
+    ),
   );
 }
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
-  // ❌ УБРАНО: DartPluginRegistrant.ensureInitialized();
+  ui.DartPluginRegistrant.ensureInitialized();
+
+  // Запрашиваем разрешения сразу в фоне
+  await _requestPermissions();
 
   if (service is AndroidServiceInstance) {
     service.setAsForegroundService();
@@ -33,42 +40,53 @@ void onStart(ServiceInstance service) async {
     service.stopSelf();
   });
 
-  Position? last;
+  _startLocationUpdates(service);
+  _startFactTimer(service);
+}
 
-  // GPS
-  Geolocator.getPositionStream(
-    locationSettings: const LocationSettings(
-      accuracy: LocationAccuracy.best,
-      distanceFilter: 10,
+Future<void> _requestPermissions() async {
+  LocationPermission permission = await Geolocator.checkPermission();
+  
+  if (permission == LocationPermission.denied) {
+    permission = await Geolocator.requestPermission();
+  }
+  
+  if (permission == LocationPermission.deniedForever) {
+    // Можно отправить уведомление пользователю
+    print('Разрешение на геолокацию отклонено навсегда');
+  }
+}
+
+void _startLocationUpdates(ServiceInstance service) {
+  // 👇 КРИТИЧЕСКИ ВАЖНО: настройки именно для Android
+  final locationSettings = AndroidSettings(
+    accuracy: LocationAccuracy.bestForNavigation,
+    distanceFilter: 5,
+    intervalDuration: const Duration(seconds: 1), // ИСПРАВЛЕНО: Duration вместо int
+    foregroundNotificationConfig: const ForegroundNotificationConfig(
+      notificationTitle: 'Running Historian',
+      notificationText: 'Запись тренировки',
+      enableWakeLock: true,
     ),
-  ).listen((position) {
-    // 👇 ФИЛЬТРАЦИЯ В ФОНЕ (архитектурно правильно)
-    if (position.accuracy > 25) return;
+  );
 
-    if (last != null) {
-      final d = Geolocator.distanceBetween(
-        last!.latitude,
-        last!.longitude,
-        position.latitude,
-        position.longitude,
-      );
-      if (d > 50) return;
-    }
-
-    last = position;
-
+  Geolocator.getPositionStream(locationSettings: locationSettings)
+      .listen((position) {
     service.invoke('locationUpdate', {
       'lat': position.latitude,
       'lon': position.longitude,
-      'timestamp': position.timestamp?.toIso8601String(),
       'speed': position.speed,
+      'heading': position.heading ?? 0.0,
+      'timestamp': position.timestamp?.toIso8601String(),
     });
+  }, onError: (error) {
+    print('Ошибка фонового GPS: $error');
   });
+}
 
-  // TTS по таймеру
+void _startFactTimer(ServiceInstance service) {
   Timer.periodic(const Duration(minutes: 2), (timer) {
-    final randomIndex =
-        DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
+    final randomIndex = DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
     final fact = kGeneralFacts[randomIndex];
     service.invoke('speak', {
       'text': 'Интересный факт о Ростове-на-Дону: $fact',

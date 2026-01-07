@@ -26,10 +26,14 @@ dependencies:
   hive_flutter: ^1.1.0
 
   flutter_background_service: ^5.0.5
-  flutter_background_service_android: ^6.0.3 # 👈 Уже есть
+  flutter_background_service_android: ^6.0.3
 
   permission_handler: ^11.0.1
   app_settings: ^5.1.1
+  
+  # 👇 ТОЛЬКО ЭТИ НОВЫЕ ЗАВИСИМОСТИ ДЛЯ ИСТОРИИ
+  flutter_animate: ^4.3.0
+  smooth_page_indicator: ^1.0.1
 
 dev_dependencies:
   flutter_test:
@@ -37,9 +41,10 @@ dev_dependencies:
 
   flutter_lints: ^2.0.0
   build_runner: ^2.4.7
-  hive_generator: ^2.0.1 # 👈 Уже есть
+  hive_generator: ^2.0.1
 
 flutter:
   uses-material-design: true
   assets:
     - assets/music.mp3
+    - assets/images/  # 👈 ДОБАВЛЕНО ДЛЯ ИЗОБРАЖЕНИЙ В ИСТОРИИ
