@@ -8,7 +8,6 @@ import 'package:running_historian/domain/route_point.dart';
 import 'package:running_historian/domain/run_session.dart';
 import 'package:running_historian/storage/run_repository.dart';
 import 'package:running_historian/ui/widgets/run_controls.dart';
-import 'package:running_historian/ui/widgets/distance_panel.dart';
 import 'package:running_historian/config/constants.dart';
 import 'package:running_historian/services/tts_service.dart';
 import 'package:running_historian/services/audio_service.dart';
@@ -16,12 +15,11 @@ import 'package:running_historian/domain/landmark.dart';
 import 'package:running_historian/ui/screens/history_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:running_historian/services/facts_service.dart';
-import 'package:running_historian/ui/widgets/compass_marker.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:running_historian/services/background_service.dart';
 import 'dart:math' as math;
 
-// 👇 НОВОЕ: стейт-машина
+// 👇 СТЕЙТ-МАШИНА
 enum RunState {
   init,
   searchingGps,
@@ -42,34 +40,35 @@ class RunScreen extends StatefulWidget {
 class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
   Position? _currentPosition;
-  StreamSubscription<Position>? _locationSubscription;
   StreamSubscription? _backgroundLocationSubscription;
   Timer? _factsTimer;
-  bool _isRunning = false;
-  bool _showResults = false;
+  
+  // 👇 НОВЫЙ ТАЙМЕР ДЛЯ СИНХРОНИЗАЦИИ
+  Timer? _runTicker;
+  Duration _elapsedRunTime = Duration.zero;
+  
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService;
   List<RoutePoint> _route = [];
   DateTime? _runStartTime;
-  DateTime? _runEndTime;
+  DateTime? _pauseStartTime;
+  Duration _totalRunTime = Duration.zero;
   int _factsCount = 0;
   double _distance = 0.0;
   double _totalDistanceInMeters = 0.0;
   List<RunSession> _history = [];
   MusicMode _musicMode = MusicMode.external;
   DateTime? _lastFactTime;
-  bool _isPaused = false;
   double _heading = 0.0;
+  LatLng? _startPoint;
 
   final Set<int> _lastFactIndices = <int>{};
   DateTime? _lastCameraMove;
   final List<RoutePoint> _smoothBuffer = [];
 
-  // 👇 НОВОЕ: стейт-машина
   RunState _state = RunState.init;
 
-  // 👇 НОВОЕ: таймер обратного отсчёта
   Timer? _countdownTimer;
   int _countdown = 3;
 
@@ -85,10 +84,40 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _factsService = FactsService(_tts);
     _initAnimations();
     _loadHistory();
-    _startSearchingGps(); // 👈 НОВОЕ: запускаем стейт-машину
+    _initBackgroundListener();
+    _startSearchingGps();
   }
 
-  // 👇 НОВОЕ: метод поиска GPS
+  void _initBackgroundListener() {
+    _backgroundLocationSubscription = FlutterBackgroundService()
+        .on('locationUpdate')
+        .listen(_onBackgroundLocation);
+  }
+
+  void _initAnimations() {
+    _distanceController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
+    _distanceAnimation = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(_distanceController);
+
+    _factController = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+    _factAnimation = Tween<double>(begin: 0, end: 1).animate(_factController);
+  }
+
+  Future<void> _loadHistory() async {
+    _history = await RunRepository().getHistory();
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   Future<void> _startSearchingGps() async {
     setState(() {
       _state = RunState.searchingGps;
@@ -124,52 +153,48 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
       setState(() {
         _currentPosition = position;
-        _state = RunState.ready; // 👈 ПЕРЕХОД: SEARCHING_GPS → READY
+        _state = RunState.ready;
+        _startPoint = null;
       });
 
       _mapController.move(LatLng(position.latitude, position.longitude), 15);
     } catch (e) {
       print('Ошибка при поиске GPS: $e');
       setState(() {
-        _state = RunState.init; // 👈 ВОЗВРАТ К НАЧАЛУ
+        _state = RunState.init;
       });
     }
   }
 
-  // 👇 НОВОЕ: метод обратного отсчёта
-  void _startCountdown() {
-    setState(() {
-      _state = RunState.countdown;
-      _countdown = 3;
-    });
+  void _onBackgroundLocation(dynamic data) {
+    if (!mounted) return;
 
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_countdown > 0) {
-        setState(() {
-          _countdown--;
-        });
-      } else {
-        _countdownTimer?.cancel();
-        _startRun(); // 👈 Запускаем тренировку
+    final position = Position(
+      latitude: data['lat'],
+      longitude: data['lon'],
+      timestamp: data['timestamp'] != null
+          ? DateTime.parse(data['timestamp'])
+          : DateTime.now(),
+      accuracy: 5,
+      altitude: 0,
+      heading: _heading,
+      speed: data['speed'] ?? 0,
+      speedAccuracy: 0,
+      altitudeAccuracy: 0,
+      headingAccuracy: 0,
+    );
+
+    setState(() {
+      _currentPosition = position;
+
+      if (_state == RunState.running) {
+        _route.add(RoutePoint.fromPosition(position));
+        _calculateDistance();
+        _checkProximity(position);
       }
     });
-  }
 
-  void _initAnimations() {
-    _distanceController = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    );
-    _distanceAnimation = Tween<double>(
-      begin: 0,
-      end: 1,
-    ).animate(_distanceController);
-
-    _factController = AnimationController(
-      duration: const Duration(milliseconds: 1000),
-      vsync: this,
-    );
-    _factAnimation = Tween<double>(begin: 0, end: 1).animate(_factController);
+    _moveCamera(position);
   }
 
   void _moveCamera(Position position) {
@@ -205,37 +230,6 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _onBackgroundLocation(dynamic data) {
-    if (!mounted) return;
-
-    final position = Position(
-      latitude: data['lat'],
-      longitude: data['lon'],
-      timestamp: data['timestamp'] != null
-          ? DateTime.parse(data['timestamp'])
-          : DateTime.now(),
-      accuracy: 5,
-      altitude: 0,
-      heading: _heading,
-      speed: data['speed'] ?? 0,
-      speedAccuracy: 0,
-      altitudeAccuracy: 0,
-      headingAccuracy: 0,
-    );
-
-    setState(() {
-      _currentPosition = position;
-
-      if (_state == RunState.running && !_isPaused) {
-        _route.add(RoutePoint.fromPosition(position));
-        _calculateDistance();
-        _checkProximity(position);
-      }
-    });
-
-    _moveCamera(position);
-  }
-
   void _calculateDistance() {
     if (_route.length < 2) return;
 
@@ -266,7 +260,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   void _startGeneralFacts() {
     _factsTimer?.cancel();
     _factsTimer = Timer.periodic(Duration(minutes: kFactsIntervalMinutes), (timer) {
-      if (_state == RunState.running && !_isPaused && _route.length > 5) {
+      if (_state == RunState.running && _route.length > 5) {
         final now = DateTime.now();
         if (_lastFactTime == null ||
             now.difference(_lastFactTime!) >= Duration(minutes: kMinIntervalBetweenFacts)) {
@@ -306,6 +300,24 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _tts.speak(text);
   }
 
+  void _startCountdown() {
+    setState(() {
+      _state = RunState.countdown;
+      _countdown = 3;
+    });
+
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_countdown > 0) {
+        setState(() {
+          _countdown--;
+        });
+      } else {
+        _countdownTimer?.cancel();
+        _startRun();
+      }
+    });
+  }
+
   void _startRun() async {
     await initBackgroundService();
     FlutterBackgroundService().startService();
@@ -314,17 +326,36 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       setState(() {
         _state = RunState.running;
         _runStartTime = DateTime.now();
+        _pauseStartTime = null;
+        _totalRunTime = Duration.zero;
+        _elapsedRunTime = Duration.zero; // 👈 СБРАСЫВАЕМ ВРЕМЯ
         _route = [];
         _factsCount = 0;
         _distance = 0.0;
         _totalDistanceInMeters = 0.0;
         _lastFactTime = null;
-        _isPaused = false;
         _lastFactIndices.clear();
         _lastCameraMove = null;
         _smoothBuffer.clear();
+        
+        if (_currentPosition != null) {
+          _startPoint = LatLng(
+            _currentPosition!.latitude,
+            _currentPosition!.longitude,
+          );
+        }
       });
     }
+
+    // 👇 ЗАПУСКАЕМ СИНХРОНИЗИРОВАННЫЙ ТАЙМЕР
+    _runTicker?.cancel();
+    _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _state == RunState.running) {
+        setState(() {
+          _elapsedRunTime += const Duration(seconds: 1);
+        });
+      }
+    });
 
     _audio.playMusic(_musicMode);
     _startGeneralFacts();
@@ -335,10 +366,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   void _stopRun() {
     FlutterBackgroundService().invoke('stopService');
 
+    // 👇 ОСТАНАВЛИВАЕМ ТАЙМЕР
+    _runTicker?.cancel();
+
     if (mounted) {
       setState(() {
         _state = RunState.finished;
-        _runEndTime = DateTime.now();
       });
     }
     _audio.stopMusic();
@@ -349,10 +382,13 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _pauseRun() {
+    // 👇 ОСТАНАВЛИВАЕМ ТАЙМЕР
+    _runTicker?.cancel();
+
     if (mounted) {
       setState(() {
         _state = RunState.paused;
-        _isPaused = true;
+        _pauseStartTime = DateTime.now();
       });
     }
     
@@ -360,10 +396,23 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _resumeRun() {
+    // 👇 ВОЗОБНОВЛЯЕМ ТАЙМЕР
+    _runTicker?.cancel();
+    _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _state == RunState.running) {
+        setState(() {
+          _elapsedRunTime += const Duration(seconds: 1);
+        });
+      }
+    });
+
     if (mounted) {
       setState(() {
         _state = RunState.running;
-        _isPaused = false;
+        if (_pauseStartTime != null) {
+          _totalRunTime += DateTime.now().difference(_pauseStartTime!);
+          _pauseStartTime = null;
+        }
       });
     }
     
@@ -375,7 +424,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       date: DateTime.now(),
       distance: _distance,
-      duration: _runEndTime!.difference(_runStartTime!).inSeconds,
+      duration: _elapsedRunTime.inSeconds, // 👈 ИСПОЛЬЗУЕМ СИНХРОНИЗИРОВАННОЕ ВРЕМЯ
       factsCount: _factsCount,
       route: _route,
       spokenFactIndices: _lastFactIndices.toList(),
@@ -389,7 +438,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       });
     }
 
-    print("💾 Сессия сохранена: $_distance км, $_factsCount фактов");
+    print("💾 Сессия сохранена: $_distance км, ${_elapsedRunTime.inSeconds} сек, $_factsCount фактов");
   }
 
   List<Polyline> _buildSpeedPolylines() {
@@ -423,11 +472,32 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     return polylines;
   }
 
+  // 👇 ПРАВИЛЬНЫЙ РАСЧЁТ ТЕМПА
+  String get _currentPace {
+    if (_distance <= 0) return '--';
+    
+    final secondsPerKm = _elapsedRunTime.inSeconds / _distance;
+    final minutes = (secondsPerKm / 60).floor();
+    final seconds = (secondsPerKm % 60).round();
+    
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  // 👇 РЕАЛИСТИЧНЫЙ РАСЧЁТ КАЛОРИЙ
+  double _calculateCalories() {
+    const double weightKg = 75; // можно сделать настройкой позже
+    const double metRunning = 9.8; // бег 8–9 км/ч
+    
+    final hours = _elapsedRunTime.inSeconds / 3600;
+    return metRunning * weightKg * hours;
+  }
+
   @override
   void dispose() {
     _backgroundLocationSubscription?.cancel();
     _factsTimer?.cancel();
-    _countdownTimer?.cancel(); // 👈 Отмена таймера отсчёта
+    _countdownTimer?.cancel();
+    _runTicker?.cancel(); // 👈 ОТМЕНА НОВОГО ТАЙМЕРА
     _distanceController.dispose();
     _factController.dispose();
     _tts.dispose();
@@ -435,15 +505,13 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  Future<void> _loadHistory() async {
-    _history = await RunRepository().getHistory();
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
+    final currentDistance = _distance;
+    final currentPace = _currentPace; // 👈 ИСПОЛЬЗУЕМ СИНХРОНИЗИРОВАННЫЙ ТЕМП
+    final currentCalories = _calculateCalories().round(); // 👈 ПРАВИЛЬНЫЙ РАСЧЁТ КАЛОРИЙ
+    final currentRunTime = _elapsedRunTime; // 👈 ИСПОЛЬЗУЕМ СИНХРОНИЗИРОВАННОЕ ВРЕМЯ
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Ростов-на-Дону'),
@@ -504,7 +572,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                     'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.running_historian',
               ),
-              if (_state == RunState.running && _route.isNotEmpty)
+              if ((_state == RunState.running || _state == RunState.finished) && _route.isNotEmpty)
                 PolylineLayer(
                   polylines: [
                     ..._buildSpeedPolylines(),
@@ -522,10 +590,32 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                       height: 50,
                       child: Transform.rotate(
                         angle: _heading * math.pi / 180,
-                        child: Icon(
+                        child: const Icon(
                           Icons.navigation,
                           color: Colors.deepPurple,
                           size: 28,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              if (_state != RunState.init && _startPoint != null && _state != RunState.searchingGps)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _startPoint!,
+                      width: 40,
+                      height: 40,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: const Icon(
+                          Icons.flag,
+                          color: Colors.white,
+                          size: 24,
                         ),
                       ),
                     ),
@@ -535,32 +625,17 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                 MarkerLayer(
                   markers: [
                     Marker(
-                      point: LatLng(_route.first.lat, _route.first.lon),
-                      width: 30,
-                      height: 30,
+                      point: LatLng(_route.last.lat, _route.last.lon),
+                      width: 40,
+                      height: 40,
                       child: Container(
-                        decoration: const BoxDecoration(
+                        decoration: BoxDecoration(
                           color: Colors.red,
                           shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
                         ),
                         child: const Icon(
                           Icons.fiber_manual_record,
-                          color: Colors.white,
-                          size: 16,
-                        ),
-                      ),
-                    ),
-                    Marker(
-                      point: LatLng(_route.last.lat, _route.last.lon),
-                      width: 30,
-                      height: 30,
-                      child: Container(
-                        decoration: const BoxDecoration(
-                          color: Colors.green,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.flag,
                           color: Colors.white,
                           size: 16,
                         ),
@@ -591,8 +666,116 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
               ),
             ],
           ),
-          DistancePanel(distance: _distance),
-          // 👇 НОВОЕ: оверлей по стейту
+          if (_state == RunState.running || _state == RunState.paused)
+            Positioned(
+              top: 50,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.route, color: Colors.white, size: 30),
+                        const SizedBox(width: 8),
+                        Text(
+                          currentDistance.toStringAsFixed(2),
+                          style: const TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Text(
+                          'км',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        Column(
+                          children: [
+                            const Icon(Icons.access_time, color: Colors.white),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${currentRunTime.inMinutes.remainder(60).toString().padLeft(2, '0')}:${(currentRunTime.inSeconds.remainder(60)).toString().padLeft(2, '0')}',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const Text(
+                              'Время',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Column(
+                          children: [
+                            const Icon(Icons.speed, color: Colors.white),
+                            const SizedBox(height: 4),
+                            Text(
+                              currentPace,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const Text(
+                              'Темп',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Column(
+                          children: [
+                            const Icon(Icons.local_fire_department, color: Colors.white),
+                            const SizedBox(height: 4),
+                            Text(
+                              currentCalories.toString(),
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const Text(
+                              'Кал',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
           if (_state == RunState.searchingGps)
             Positioned(
               top: 50,
@@ -669,7 +852,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                     children: [
                       Text(
                         _countdown > 0 ? '$_countdown' : 'СТАРТ',
-                        style: TextStyle(
+                        style: const TextStyle(
                           fontSize: 80,
                           fontWeight: FontWeight.bold,
                           color: Colors.yellow,
@@ -678,7 +861,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                       const SizedBox(height: 20),
                       Text(
                         _countdown > 0 ? 'Подготовьтесь!' : 'Бегите!',
-                        style: TextStyle(
+                        style: const TextStyle(
                           fontSize: 20,
                           color: Colors.white,
                         ),
@@ -688,7 +871,6 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                 ),
               ),
             ),
-          // 👇 Кнопки по стейту
           Positioned(
             bottom: 20,
             left: 20,
@@ -698,12 +880,16 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
               children: [
                 if (_state == RunState.ready)
                   ElevatedButton(
-                    onPressed: _startCountdown, // 👈 НАЧИНАЕМ ОТСЧЁТ
+                    onPressed: _startCountdown,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
+                      minimumSize: const Size(150, 60),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
-                    child: const Text('Start'),
+                    child: const Text('Start', style: TextStyle(fontSize: 20)),
                   ),
                 if (_state == RunState.running)
                   ElevatedButton(
@@ -711,8 +897,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.orange,
                       foregroundColor: Colors.white,
+                      minimumSize: const Size(150, 60),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
-                    child: const Text('Pause'),
+                    child: const Text('Pause', style: TextStyle(fontSize: 20)),
                   ),
                 if (_state == RunState.paused)
                   Row(
@@ -723,8 +913,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green,
                           foregroundColor: Colors.white,
+                          minimumSize: const Size(120, 60),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
-                        child: const Text('Resume'),
+                        child: const Text('Resume', style: TextStyle(fontSize: 18)),
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton(
@@ -732,8 +926,12 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.red,
                           foregroundColor: Colors.white,
+                          minimumSize: const Size(120, 60),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
-                        child: const Text('Stop'),
+                        child: const Text('Stop', style: TextStyle(fontSize: 18)),
                       ),
                     ],
                   ),
@@ -742,10 +940,19 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                     onPressed: () {
                       setState(() {
                         _state = RunState.searchingGps;
+                        _startPoint = null;
                         _startSearchingGps();
                       });
                     },
-                    child: const Text('Новая тренировка'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(200, 60),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text('Новая тренировка', style: TextStyle(fontSize: 20)),
                   ),
               ],
             ),
