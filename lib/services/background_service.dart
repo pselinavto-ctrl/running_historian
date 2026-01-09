@@ -18,10 +18,7 @@ Future<void> initBackgroundService() async {
       initialNotificationContent: 'Аудиогид работает',
       foregroundServiceNotificationId: 777,
     ),
-    iosConfiguration: IosConfiguration(
-      autoStart: false,
-      onForeground: onStart,
-    ),
+    iosConfiguration: IosConfiguration(autoStart: false, onForeground: onStart),
   );
 }
 
@@ -33,7 +30,14 @@ void onStart(ServiceInstance service) async {
   await _requestPermissions();
 
   if (service is AndroidServiceInstance) {
+    // 🔥 КРИТИЧЕСКИ ВАЖНО: вызвать setAsForegroundService() ДО выполнения других задач
     service.setAsForegroundService();
+
+    // Установить информацию для уведомления (опционально, но желательно сразу)
+    service.setForegroundNotificationInfo(
+      title: "Running Historian",
+      content: "Запись тренировки активна",
+    );
   }
 
   service.on('stopService').listen((event) {
@@ -46,11 +50,11 @@ void onStart(ServiceInstance service) async {
 
 Future<void> _requestPermissions() async {
   LocationPermission permission = await Geolocator.checkPermission();
-  
+
   if (permission == LocationPermission.denied) {
     permission = await Geolocator.requestPermission();
   }
-  
+
   if (permission == LocationPermission.deniedForever) {
     // Можно отправить уведомление пользователю
     print('Разрешение на геолокацию отклонено навсегда');
@@ -62,7 +66,9 @@ void _startLocationUpdates(ServiceInstance service) {
   final locationSettings = AndroidSettings(
     accuracy: LocationAccuracy.bestForNavigation,
     distanceFilter: 5,
-    intervalDuration: const Duration(seconds: 1), // ИСПРАВЛЕНО: Duration вместо int
+    intervalDuration: const Duration(
+      seconds: 1,
+    ), // ИСПРАВЛЕНО: Duration вместо int
     foregroundNotificationConfig: const ForegroundNotificationConfig(
       notificationTitle: 'Running Historian',
       notificationText: 'Запись тренировки',
@@ -70,23 +76,26 @@ void _startLocationUpdates(ServiceInstance service) {
     ),
   );
 
-  Geolocator.getPositionStream(locationSettings: locationSettings)
-      .listen((position) {
-    service.invoke('locationUpdate', {
-      'lat': position.latitude,
-      'lon': position.longitude,
-      'speed': position.speed,
-      'heading': position.heading ?? 0.0,
-      'timestamp': position.timestamp?.toIso8601String(),
-    });
-  }, onError: (error) {
-    print('Ошибка фонового GPS: $error');
-  });
+  Geolocator.getPositionStream(locationSettings: locationSettings).listen(
+    (position) {
+      service.invoke('locationUpdate', {
+        'lat': position.latitude,
+        'lon': position.longitude,
+        'speed': position.speed,
+        'heading': position.heading ?? 0.0,
+        'timestamp': position.timestamp?.toIso8601String(),
+      });
+    },
+    onError: (error) {
+      print('Ошибка фонового GPS: $error');
+    },
+  );
 }
 
 void _startFactTimer(ServiceInstance service) {
   Timer.periodic(const Duration(minutes: 2), (timer) {
-    final randomIndex = DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
+    final randomIndex =
+        DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
     final fact = kGeneralFacts[randomIndex];
     service.invoke('speak', {
       'text': 'Интересный факт о Ростове-на-Дону: $fact',

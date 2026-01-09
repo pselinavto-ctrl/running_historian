@@ -55,11 +55,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   List<RunSession> _history = [];
   MusicMode _musicMode = MusicMode.external;
   DateTime? _lastFactTime;
-  double _heading = 0.0;
+  double _heading = 0.0; // Это будет raw heading до сглаживания
   LatLng? _startPoint;
   final Set<int> _lastFactIndices = <int>{};
-  DateTime? _lastCameraMove;
-  final List<RoutePoint> _smoothBuffer = [];
   RunState _state = RunState.searchingGps;
   Timer? _countdownTimer;
   int _countdown = 3;
@@ -67,6 +65,19 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   late Animation<double> _distanceAnimation;
   late AnimationController _factController;
   late Animation<double> _factAnimation;
+
+  // 👇 1️⃣ ДОБАВЬ ПОЛЯ (ОБЯЗАТЕЛЬНО)
+  LatLng? _smoothedPosition;
+  double _smoothedHeading = 0.0;
+
+  DateTime? _lastCameraUpdate;
+  DateTime? _lastValidGpsTime;
+
+  static const double _maxJumpMeters = 40; // анти-телепортация
+  static const Duration _cameraInterval = Duration(milliseconds: 400);
+
+  // 1️⃣ FOLLOW MODE (новое поле)
+  bool _followUser = true;
 
   @override
   void initState() {
@@ -233,62 +244,165 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     }
   }
 
+  // 👇 2️⃣ АНТИ-GPS СКАЧКИ (КРИТИЧНО)
+  bool _isGpsJump(Position prev, Position next) {
+    final d = Geolocator.distanceBetween(
+      prev.latitude,
+      prev.longitude,
+      next.latitude,
+      next.longitude,
+    );
+
+    return d > _maxJumpMeters;
+  }
+
+  // 👇 3️⃣ СГЛАЖИВАНИЕ ПОЗИЦИИ (LOW-PASS FILTER)
+  LatLng _smoothPosition(LatLng raw) {
+    if (_smoothedPosition == null) {
+      _smoothedPosition = raw;
+      return raw;
+    }
+
+    const alpha = 0.15; // меньше — плавнее
+    final lat =
+        _smoothedPosition!.latitude +
+        alpha * (raw.latitude - _smoothedPosition!.latitude);
+    final lon =
+        _smoothedPosition!.longitude +
+        alpha * (raw.longitude - _smoothedPosition!.longitude);
+
+    _smoothedPosition = LatLng(lat, lon);
+    return _smoothedPosition!;
+  }
+
+  // 👇 4️⃣ СГЛАЖИВАНИЕ HEADING (ОЧЕНЬ ВАЖНО)
+  double _smoothHeading(double raw) {
+    const alpha = 0.2;
+
+    double delta = raw - _smoothedHeading;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+
+    _smoothedHeading += alpha * delta;
+    return _smoothedHeading;
+  }
+
+  // 👇 5️⃣ LOOK-AHEAD (КАМЕРА СМОТРИТ ВПЕРЁД)
+  LatLng _lookAhead(LatLng pos, double speed) {
+    final distance = math.min(speed * 1.5, 20); // метров
+    final rad = _smoothedHeading * math.pi / 180;
+
+    final dLat = (distance / 111111) * math.cos(rad);
+    final dLon =
+        (distance / (111111 * math.cos(pos.latitude * math.pi / 180))) *
+        math.sin(rad);
+
+    return LatLng(pos.latitude + dLat, pos.longitude + dLon);
+  }
+
+  // 👇 6️⃣ DEAD-RECKONING (МЕЖДУ GPS)
+  LatLng _predict(Position pos) {
+    if (_lastValidGpsTime == null) {
+      _lastValidGpsTime = DateTime.now();
+      return LatLng(pos.latitude, pos.longitude);
+    }
+
+    final now = DateTime.now();
+    final dt = now.difference(_lastValidGpsTime!).inMilliseconds / 1000;
+    _lastValidGpsTime = now;
+
+    final distance = pos.speed * dt;
+    final rad = _smoothedHeading * math.pi / 180;
+
+    final dLat = (distance / 111111) * math.cos(rad);
+    final dLon =
+        (distance / (111111 * math.cos(pos.latitude * math.pi / 180))) *
+        math.sin(rad);
+
+    return LatLng(pos.latitude + dLat, pos.longitude + dLon);
+  }
+
+  // 👇 7️⃣ ФИНАЛЬНЫЙ _onBackgroundLocation
   void _onBackgroundLocation(dynamic data) {
-    // print('Получено новое местоположение: $data'); // Лог для проверки
-
     if (!mounted) return;
-
-    final double newHeading = (data['heading'] as num?)?.toDouble() ?? _heading;
+    if (data['lat'] == null || data['lon'] == null) return;
 
     final position = Position(
       latitude: data['lat'],
       longitude: data['lon'],
-      timestamp: data['timestamp'] != null
-          ? DateTime.parse(data['timestamp'])
-          : DateTime.now(),
+      timestamp: DateTime.now(),
       accuracy: 5,
       altitude: 0,
-      heading: newHeading,
+      heading: (data['heading'] as num?)?.toDouble() ?? _heading,
       speed: (data['speed'] as num?)?.toDouble() ?? 0,
       speedAccuracy: 0,
       altitudeAccuracy: 0,
       headingAccuracy: 0,
     );
 
-    setState(() {
-      _currentPosition = position;
-      _heading = newHeading;
+    if (_currentPosition != null && _isGpsJump(_currentPosition!, position)) {
+      print('IGNORING GPS JUMP'); // Лог для отладки
+      return; // ❌ игнорируем скачок
+    }
 
-      // ИСПРАВЛЕНО: проверяем на searchingGps, чтобы сбросить состояние при новой тренировке
+    _currentPosition = position;
+
+    final rawHeading = position.heading;
+    _smoothedHeading = _smoothHeading(rawHeading);
+
+    final predicted = _predict(position);
+    final smoothed = _smoothPosition(predicted);
+
+    setState(() {
       if (_state == RunState.searchingGps) {
-        _state = RunState
-            .ready; // Переходим в ready при получении первого обновления
+        _state = RunState.ready;
         _mapController.move(LatLng(position.latitude, position.longitude), 15);
       }
 
       if (_state == RunState.running) {
-        _route.add(RoutePoint.fromPosition(position));
+        // ✅ ИСПРАВЛЕНО: добавляем СГЛАЖЕННУЮ точку в маршрут
+        _route.add(
+          RoutePoint(
+            lat: smoothed.latitude,
+            lon: smoothed.longitude,
+            timestamp: position.timestamp ?? DateTime.now(),
+            speed: position.speed,
+          ),
+        );
         _calculateDistance();
         _checkProximity(position);
       }
     });
 
-    _moveCamera(position);
+    _moveCamera(smoothed);
   }
 
-  void _moveCamera(Position position) {
-    final now = DateTime.now();
-    if (_lastCameraMove == null ||
-        now.difference(_lastCameraMove!) > const Duration(seconds: 3)) {
-      final offset = 0.0003;
-      final target = LatLng(
-        position.latitude + offset * math.cos(_heading * math.pi / 180),
-        position.longitude + offset * math.sin(_heading * math.pi / 180),
-      );
+  // 👇 8️⃣ ФИНАЛЬНЫЙ _moveCamera (БЕЗ ДЁРГАНИЙ)
+  void _moveCamera(LatLng pos) {
+    // 1️⃣ FOLLOW MODE
+    if (!_followUser || _state != RunState.running) return;
 
-      _mapController.move(target, 17);
-      _lastCameraMove = now;
-    }
+    final now = DateTime.now();
+    if (_lastCameraUpdate != null &&
+        now.difference(_lastCameraUpdate!) < _cameraInterval)
+      return;
+
+    final target = _lookAhead(pos, _currentPosition?.speed ?? 0);
+
+    _mapController.moveAndRotate(target, _calculateZoom(), _smoothedHeading);
+
+    _lastCameraUpdate = now;
+  }
+
+  // 👇 3️⃣ АДАПТИВНЫЙ ZOOM ПО СКОРОСТИ (из предыдущего патча)
+  double _calculateZoom() {
+    final speed = _currentPosition?.speed ?? 0;
+
+    if (speed < 1.5) return 17.5; // шаг
+    if (speed < 3.5) return 17.0; // медленный бег
+    if (speed < 5.5) return 16.5; // норм бег
+    if (speed < 7.5) return 16.0; // быстрый
+    return 15.5; // спринт
   }
 
   void _showError(String message) {
@@ -406,6 +520,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     if (mounted) {
       setState(() {
         _state = RunState.running;
+        _followUser = true; // 1️⃣ FOLLOW MODE
         _runStartTime = DateTime.now();
         _route = [];
         _factsCount = 0;
@@ -413,8 +528,10 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         _totalDistanceInMeters = 0.0;
         _lastFactTime = null;
         _lastFactIndices.clear();
-        _lastCameraMove = null;
-        _smoothBuffer.clear();
+        _lastCameraUpdate = null;
+        _lastValidGpsTime = null; // Сброс при старте
+        _smoothedPosition = null; // Сброс сглаженной позиции
+        _smoothedHeading = 0.0; // Сброс сглаженного направления
         _elapsedRunTime = Duration.zero;
 
         if (_currentPosition != null) {
@@ -442,6 +559,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _stopRun() {
+    _followUser = false; // 1️⃣ FOLLOW MODE
+
     // FlutterBackgroundService().invoke('stopService'); // УДАЛЕНО - НЕ ОСТАНАВЛИВАЕМ СЕРВИС
     _runTicker?.cancel();
 
@@ -471,6 +590,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _pauseRun() {
+    _followUser = false; // 1️⃣ FOLLOW MODE
     _runTicker?.cancel();
 
     if (mounted) {
@@ -483,6 +603,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   }
 
   void _resumeRun() {
+    _followUser = true; // 1️⃣ FOLLOW MODE
     _runTicker?.cancel();
     _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _state == RunState.running) {
@@ -661,13 +782,18 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
+              // ❌ 9️⃣ MapOptions (ПРОВЕРЬ) - rotation УДАЛЕН
               initialCenter: _currentPosition != null
                   ? LatLng(
                       _currentPosition!.latitude,
                       _currentPosition!.longitude,
                     )
                   : const LatLng(47.2313, 39.7233),
-              initialZoom: 15,
+              initialZoom: 16, // Изменён на 16
+              // rotation: _smoothedHeading, // ❌ УДАЛЕН из MapOptions
+              // interactionOptions: const InteractionOptions(
+              //   flags: InteractiveFlag.all & ~InteractiveFlag.rotate, // ❌ УДАЛЕН из MapOptions
+              // ),
             ),
             children: [
               TileLayer(
@@ -682,18 +808,17 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                   markers: [
                     Marker(
                       point: LatLng(
+                        // ✅ ИСПРАВЛЕНО: маркер = реальная позиция
                         _currentPosition!.latitude,
                         _currentPosition!.longitude,
                       ),
                       width: 50,
                       height: 50,
-                      child: Transform.rotate(
-                        angle: _heading * math.pi / 180,
-                        child: const Icon(
-                          Icons.navigation,
-                          color: Colors.deepPurple,
-                          size: 28,
-                        ),
+                      child: const Icon(
+                        // ✅ ИСПРАВЛЕНО: маркер НЕ вращается
+                        Icons.navigation,
+                        color: Colors.deepPurple,
+                        size: 28,
                       ),
                     ),
                   ],
@@ -1047,19 +1172,20 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                     onPressed: () {
                       setState(() {
                         _state = RunState.searchingGps;
-                        _route.clear(); // ✅ ОЧИСТИТЬ МАРШРУТ
-                        _startPoint = null; // ✅ СБРОС СТАРТОВОЙ ТОЧКИ
-                        _distance = 0.0; // ✅ СБРОС РАССТОЯНИЯ
-                        _totalDistanceInMeters = 0.0; // ✅ СБРОС РАССТОЯНИЯ
-                        _elapsedRunTime = Duration.zero; // ✅ СБРОС ВРЕМЕНИ
-                        _factsCount = 0; // ✅ СБРОС ФАКТОВ
-                        _lastFactTime =
-                            null; // ✅ СБРОС ВРЕМЕНИ ПОСЛЕДНЕГО ФАКТА
-                        _lastFactIndices
-                            .clear(); // ✅ ОЧИСТИТЬ СПИСОК СКАЗАННЫХ ИНДЕКСОВ
-                        _lastCameraMove =
-                            null; // ✅ СБРОС ВРЕМЕНИ ДВИЖЕНИЯ КАМЕРЫ
-                        // НЕ ПЕРЕЗАПУСКАЕМ СЕРВИС - он продолжает работать
+                        _followUser =
+                            true; // Сбрасываем follow при новой тренировке
+                        _route.clear();
+                        _startPoint = null;
+                        _distance = 0.0;
+                        _totalDistanceInMeters = 0.0;
+                        _elapsedRunTime = Duration.zero;
+                        _factsCount = 0;
+                        _lastFactTime = null;
+                        _lastFactIndices.clear();
+                        _lastCameraUpdate = null;
+                        _lastValidGpsTime = null; // Сброс при новой тренировке
+                        _smoothedPosition = null; // Сброс сглаженной позиции
+                        _smoothedHeading = 0.0; // Сброс сглаженного направления
                       });
                     },
                     style: ElevatedButton.styleFrom(
