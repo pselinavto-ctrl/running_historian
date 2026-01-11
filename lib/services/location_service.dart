@@ -1,45 +1,29 @@
+// lib/services/location_service.dart
+
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 
 class LocationService {
-  static Position? _lastPosition;
+  final _controller = StreamController<Position>.broadcast();
 
-  static Stream<Position> getPositionStream() {
-    return Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 10,
-      ),
-    ).transform(
-      StreamTransformer.fromHandlers(
-        handleData: (position, sink) {
-          if (_isValid(position, _lastPosition)) {
-            _lastPosition = position;
-            sink.add(position);
-          }
-        },
-      ),
+  Stream<Position> get stream => _controller.stream;
+
+  StreamSubscription? _sub;
+
+  Future<void> start() async {
+    final settings = const LocationSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 3,
     );
+
+    _sub = Geolocator.getPositionStream(locationSettings: settings)
+        .listen((pos) {
+      _controller.add(pos);
+    });
   }
 
-  static bool _isValid(Position current, Position? last) {
-    if (current.accuracy > 25) return false;
-    if (current.speed > 10) return false;
-
-    if (last != null) {
-      final distance = Geolocator.distanceBetween(
-        last.latitude,
-        last.longitude,
-        current.latitude,
-        current.longitude,
-      );
-      if (distance > 50) return false;
-    }
-
-    return true;
-  }
-
-  static void reset() {
-    _lastPosition = null;
+  void stop() {
+    _sub?.cancel();
+    _sub = null;
   }
 }

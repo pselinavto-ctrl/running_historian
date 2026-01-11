@@ -8,7 +8,7 @@ part of 'run_session.dart';
 
 class RunSessionAdapter extends TypeAdapter<RunSession> {
   @override
-  final int typeId = 1;
+  final int typeId = 3;
 
   @override
   RunSession read(BinaryReader reader) {
@@ -23,13 +23,14 @@ class RunSessionAdapter extends TypeAdapter<RunSession> {
       duration: fields[3] as int,
       factsCount: fields[4] as int,
       route: (fields[5] as List).cast<RoutePoint>(),
+      spokenFactIndices: (fields[6] as List).cast<int>(),
     );
   }
 
   @override
   void write(BinaryWriter writer, RunSession obj) {
     writer
-      ..writeByte(6)
+      ..writeByte(7)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -41,7 +42,9 @@ class RunSessionAdapter extends TypeAdapter<RunSession> {
       ..writeByte(4)
       ..write(obj.factsCount)
       ..writeByte(5)
-      ..write(obj.route);
+      ..write(obj.route)
+      ..writeByte(6)
+      ..write(obj.spokenFactIndices);
   }
 
   @override

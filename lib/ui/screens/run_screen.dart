@@ -36,7 +36,8 @@ class RunScreen extends StatefulWidget {
   State<RunScreen> createState() => _RunScreenState();
 }
 
-class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
+class _RunScreenState extends State<RunScreen>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final MapController _mapController = MapController();
   Position? _currentPosition;
   StreamSubscription? _backgroundLocationSubscription;
@@ -46,7 +47,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService;
-  List<RoutePoint> _route = [];
+  List<RoutePoint> _route = []; // Теперь это восстановленный маршрут
   DateTime? _runStartTime;
   RunSession? _currentSession;
   int _factsCount = 0;
@@ -79,6 +80,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
   // 1️⃣ FOLLOW MODE (новое поле)
   bool _followUser = true;
 
+  // ❗️ИСПРАВЛЕНО: добавлено поле для кэширования индексов
+  List<int>? _cachedAllSpokenIndices;
+
   @override
   void initState() {
     super.initState();
@@ -87,6 +91,8 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _initAnimations();
     _loadHistory();
     _requestLocationPermissionAndStart();
+    // 👇 ДОБАВИТЬ НАБЛЮДАТЕЛЬ ЖИЗНЕННОГО ЦИКЛА
+    WidgetsBinding.instance.addObserver(this);
   }
 
   // Метод для запроса разрешений и запуска сервиса
@@ -155,7 +161,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
 
   void _initBackgroundListener() {
     _backgroundLocationSubscription = FlutterBackgroundService()
-        .on('locationUpdate')
+        .on(
+          'locationUpdate',
+        ) // ❗️Теперь фоновый сервис вызывает это событие, когда сохраняет точку в Hive
         .listen(_onBackgroundLocation);
     print('Подписка на фоновое обновление местоположения установлена');
   }
@@ -231,10 +239,20 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _tts.dispose();
     _audio.dispose();
 
+    // 👇 УДАЛИТЬ НАБЛЮДАТЕЛЬ
+    WidgetsBinding.instance.removeObserver(this);
+
     // ОСТАНОВИТЬ СЕРВИС ТОЛЬКО ПРИ УНИЧТОЖЕНИИ ВИДЖЕТА
     FlutterBackgroundService().invoke('stopService');
 
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _restoreRouteFromBackground();
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -322,18 +340,22 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     return LatLng(pos.latitude + dLat, pos.longitude + dLon);
   }
 
-  // 👇 7️⃣ ФИНАЛЬНЫЙ _onBackgroundLocation
+  // 👇 7️⃣ ФИНАЛЬНЫЙ _onBackgroundLocation (теперь ОБНОВЛЯЕТ маршрут в UI!)
   void _onBackgroundLocation(dynamic data) {
     if (!mounted) return;
     if (data['lat'] == null || data['lon'] == null) return;
 
+    final double newHeading = (data['heading'] as num?)?.toDouble() ?? _heading;
+
     final position = Position(
       latitude: data['lat'],
       longitude: data['lon'],
-      timestamp: DateTime.now(),
+      timestamp: data['timestamp'] != null
+          ? DateTime.parse(data['timestamp'])
+          : DateTime.now(),
       accuracy: 5,
       altitude: 0,
-      heading: (data['heading'] as num?)?.toDouble() ?? _heading,
+      heading: newHeading, // Используем сглаженное ниже
       speed: (data['speed'] as num?)?.toDouble() ?? 0,
       speedAccuracy: 0,
       altitudeAccuracy: 0,
@@ -360,15 +382,16 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       }
 
       if (_state == RunState.running) {
-        // ✅ ИСПРАВЛЕНО: добавляем СГЛАЖЕННУЮ точку в маршрут
+        // ✅ ДОБАВЛЕНО: _route.add(...) - теперь маршрут обновляется в реальном времени в UI
         _route.add(
           RoutePoint(
-            lat: smoothed.latitude,
-            lon: smoothed.longitude,
+            lat: position.latitude,
+            lon: position.longitude,
             timestamp: position.timestamp ?? DateTime.now(),
             speed: position.speed,
           ),
         );
+
         _calculateDistance();
         _checkProximity(position);
       }
@@ -403,6 +426,34 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     if (speed < 5.5) return 16.5; // норм бег
     if (speed < 7.5) return 16.0; // быстрый
     return 15.5; // спринт
+  }
+
+  // 👇 9️⃣ МЕТОД ВОССТАНОВЛЕНИЯ МАРШРУТА ИЗ ФОНА
+  Future<void> _restoreRouteFromBackground() async {
+    final restoredRoute = await RunRepository().getActiveRoute();
+
+    if (!mounted || restoredRoute.isEmpty) return;
+
+    setState(() {
+      _route = restoredRoute; // ✅ УСТАНАВЛИВАЕМ маршрут из Hive
+      _currentPosition = Position(
+        latitude: restoredRoute.last.lat,
+        longitude: restoredRoute.last.lon,
+        timestamp: restoredRoute.last.timestamp ?? DateTime.now(),
+        accuracy: 5,
+        altitude: 0,
+        heading: _smoothedHeading,
+        speed: restoredRoute.last.speed,
+        speedAccuracy: 0,
+        altitudeAccuracy: 0,
+        headingAccuracy: 0,
+      );
+    });
+
+    _mapController.move(
+      LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+      _calculateZoom(),
+    );
   }
 
   void _showError(String message) {
@@ -450,20 +501,28 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     _factsService.checkProximityToPoi(position);
   }
 
+  // ❗️ИСПРАВЛЕНО: _startGeneralFacts с кэшированием и await
   void _startGeneralFacts() {
     _factsTimer?.cancel();
-    _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) {
+    _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
+      // ❗️async
       if (_state == RunState.running && _route.length > 5) {
         final now = DateTime.now();
         if (_lastFactTime == null ||
             now.difference(_lastFactTime!) >= const Duration(minutes: 3)) {
           _lastFactTime = now;
 
-          final allSpokenIndices = RunRepository().getAllSpokenFactIndices();
+          // ❗️ИСПРАВЛЕНО: дожидаемся и кэшируем индексы
+          final allSpokenIndices =
+              _cachedAllSpokenIndices ??
+              await RunRepository().getAllSpokenFactIndices();
+          _cachedAllSpokenIndices =
+              allSpokenIndices; // Кэшируем на время сессии
 
           final availableIndices = <int>[];
           for (int i = 0; i < kGeneralFacts.length; i++) {
             if (!allSpokenIndices.contains(i)) {
+              // Теперь contains вызывается на List<int>
               availableIndices.add(i);
             }
           }
@@ -522,7 +581,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
         _state = RunState.running;
         _followUser = true; // 1️⃣ FOLLOW MODE
         _runStartTime = DateTime.now();
-        _route = [];
+        _route = []; // Сбрасываем UI маршрут
         _factsCount = 0;
         _distance = 0.0;
         _totalDistanceInMeters = 0.0;
@@ -543,6 +602,9 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       });
     }
 
+    // ✅ ОЧИСТИТЬ АКТИВНЫЙ МАРШРУТ ПРИ СТАРТЕ
+    await RunRepository().clearActiveRoute();
+
     _runTicker?.cancel();
     _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _state == RunState.running) {
@@ -553,7 +615,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
     });
 
     _audio.playMusic(_musicMode);
-    _startGeneralFacts();
+    _startGeneralFacts(); // Теперь вызывает исправленную версию
 
     _speakButtonAction("Тренировка началась");
   }
@@ -629,7 +691,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
       distance: _distance,
       duration: _elapsedRunTime.inSeconds,
       factsCount: _factsCount,
-      route: _route,
+      route: _route, // Теперь _route - это восстановленный маршрут
       spokenFactIndices: _lastFactIndices.toList(),
     );
 
@@ -1174,7 +1236,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         _state = RunState.searchingGps;
                         _followUser =
                             true; // Сбрасываем follow при новой тренировке
-                        _route.clear();
+                        _route.clear(); // Очищаем UI маршрут
                         _startPoint = null;
                         _distance = 0.0;
                         _totalDistanceInMeters = 0.0;
@@ -1186,6 +1248,7 @@ class _RunScreenState extends State<RunScreen> with TickerProviderStateMixin {
                         _lastValidGpsTime = null; // Сброс при новой тренировке
                         _smoothedPosition = null; // Сброс сглаженной позиции
                         _smoothedHeading = 0.0; // Сброс сглаженного направления
+                        _cachedAllSpokenIndices = null; // Сброс кэша индексов
                       });
                     },
                     style: ElevatedButton.styleFrom(

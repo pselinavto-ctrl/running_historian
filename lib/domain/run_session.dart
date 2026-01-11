@@ -1,10 +1,10 @@
 import 'package:hive/hive.dart';
-import 'route_point.dart';
+import 'route_point.dart'; // Импорт RoutePoint
 
 part 'run_session.g.dart';
 
-@HiveType(typeId: 2)
-class RunSession extends HiveObject {
+@HiveType(typeId: 3) // Убедитесь, что typeId уникален
+class RunSession {
   @HiveField(0)
   final String id;
 
@@ -21,7 +21,7 @@ class RunSession extends HiveObject {
   final int factsCount;
 
   @HiveField(5)
-  final List<RoutePoint> route;
+  final List<RoutePoint> route; // ❗️Важно: использует RoutePoint
 
   // 👇 НОВОЕ: список сказанных индексов
   @HiveField(6)
