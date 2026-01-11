@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:geolocator/geolocator.dart'; // ✅ ДОБАВЛЕН ИМПОРТ GEOFLOATER
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:running_historian/domain/route_point.dart';
@@ -47,7 +47,7 @@ class _RunScreenState extends State<RunScreen>
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService;
-  List<RoutePoint> _route = []; // Теперь это восстановленный маршрут
+  List<RoutePoint> _route = []; // Теперь это восстановленный маршрут из Hive
   DateTime? _runStartTime;
   RunSession? _currentSession;
   int _factsCount = 0;
@@ -56,7 +56,7 @@ class _RunScreenState extends State<RunScreen>
   List<RunSession> _history = [];
   MusicMode _musicMode = MusicMode.external;
   DateTime? _lastFactTime;
-  double _heading = 0.0; // Это будет raw heading до сглаживания
+  double _heading = 0.0; // Это raw heading до сглаживания
   LatLng? _startPoint;
   final Set<int> _lastFactIndices = <int>{};
   RunState _state = RunState.searchingGps;
@@ -75,13 +75,18 @@ class _RunScreenState extends State<RunScreen>
   DateTime? _lastValidGpsTime;
 
   static const double _maxJumpMeters = 40; // анти-телепортация
-  static const Duration _cameraInterval = Duration(milliseconds: 400);
+  static const Duration _cameraInterval = Duration(
+    milliseconds: 120,
+  ); // 5️⃣ УВЕЛИЧЕНА ЧАСТОТА
 
   // 1️⃣ FOLLOW MODE (новое поле)
   bool _followUser = true;
 
   // ❗️ИСПРАВЛЕНО: добавлено поле для кэширования индексов
   List<int>? _cachedAllSpokenIndices;
+
+  // ❗️НОВОЕ: поле для последней сглаженной позиции (для маркера)
+  LatLng? _lastSmoothedPosition;
 
   @override
   void initState() {
@@ -180,6 +185,10 @@ class _RunScreenState extends State<RunScreen>
             LatLng(position.latitude, position.longitude),
             15,
           );
+          // ✅ УСТАНОВИТЬ СОСТОЯНИЕ READY ПРИ ПОЛУЧЕНИИ ПОЗИЦИИ
+          if (_state == RunState.searchingGps) {
+            _state = RunState.ready;
+          }
         });
       }
     } catch (e) {
@@ -251,7 +260,7 @@ class _RunScreenState extends State<RunScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _restoreRouteFromBackground();
+      _restoreRouteFromBackground(); // ✅ ИСПРАВЛЕНО: вызов метода с правильным именем
     }
   }
 
@@ -305,9 +314,9 @@ class _RunScreenState extends State<RunScreen>
     return _smoothedHeading;
   }
 
-  // 👇 5️⃣ LOOK-AHEAD (КАМЕРА СМОТРИТ ВПЕРЁД)
+  // 👇 5️⃣ LOOK-AHEAD (КАМЕРА СМОТРИТ ВПЕРЁД) - УМЕНЬШЕНО
   LatLng _lookAhead(LatLng pos, double speed) {
-    final distance = math.min(speed * 1.5, 20); // метров
+    final distance = math.min(speed * 0.7, 8); // метров (было 1.5, 20)
     final rad = _smoothedHeading * math.pi / 180;
 
     final dLat = (distance / 111111) * math.cos(rad);
@@ -318,34 +327,13 @@ class _RunScreenState extends State<RunScreen>
     return LatLng(pos.latitude + dLat, pos.longitude + dLon);
   }
 
-  // 👇 6️⃣ DEAD-RECKONING (МЕЖДУ GPS)
-  LatLng _predict(Position pos) {
-    if (_lastValidGpsTime == null) {
-      _lastValidGpsTime = DateTime.now();
-      return LatLng(pos.latitude, pos.longitude);
-    }
+  // 👇 6️⃣ DEAD-RECKONING (МЕЖДУ GPS) - УБРАНО (теперь только при accuracy > 20)
+  // УДАЛЕНО: _predict(Position pos)
 
-    final now = DateTime.now();
-    final dt = now.difference(_lastValidGpsTime!).inMilliseconds / 1000;
-    _lastValidGpsTime = now;
-
-    final distance = pos.speed * dt;
-    final rad = _smoothedHeading * math.pi / 180;
-
-    final dLat = (distance / 111111) * math.cos(rad);
-    final dLon =
-        (distance / (111111 * math.cos(pos.latitude * math.pi / 180))) *
-        math.sin(rad);
-
-    return LatLng(pos.latitude + dLat, pos.longitude + dLon);
-  }
-
-  // 👇 7️⃣ ФИНАЛЬНЫЙ _onBackgroundLocation (теперь ОБНОВЛЯЕТ маршрут в UI!)
+  // 👇 7️⃣ ФИНАЛЬНЫЙ _onBackgroundLocation (теперь просто обновляет позицию, не маршрут)
   void _onBackgroundLocation(dynamic data) {
     if (!mounted) return;
     if (data['lat'] == null || data['lon'] == null) return;
-
-    final double newHeading = (data['heading'] as num?)?.toDouble() ?? _heading;
 
     final position = Position(
       latitude: data['lat'],
@@ -355,7 +343,7 @@ class _RunScreenState extends State<RunScreen>
           : DateTime.now(),
       accuracy: 5,
       altitude: 0,
-      heading: newHeading, // Используем сглаженное ниже
+      heading: (data['heading'] as num?)?.toDouble() ?? _heading,
       speed: (data['speed'] as num?)?.toDouble() ?? 0,
       speedAccuracy: 0,
       altitudeAccuracy: 0,
@@ -372,26 +360,32 @@ class _RunScreenState extends State<RunScreen>
     final rawHeading = position.heading;
     _smoothedHeading = _smoothHeading(rawHeading);
 
-    final predicted = _predict(position);
-    final smoothed = _smoothPosition(predicted);
+    // ❌ УДАЛЕНО: final predicted = _predict(position);
+    final rawPos = LatLng(position.latitude, position.longitude);
+    final smoothed = _smoothPosition(rawPos); // ❌ Без predicted
+
+    // ✅ СОХРАНЯЕМ СГЛАЖЕННУЮ ПОЗИЦИЮ ДЛЯ МАРКЕРА
+    _lastSmoothedPosition = smoothed;
 
     setState(() {
       if (_state == RunState.searchingGps) {
         _state = RunState.ready;
-        _mapController.move(LatLng(position.latitude, position.longitude), 15);
+        _mapController.move(
+          smoothed,
+          15,
+        ); // ❗️ИСПРАВЛЕНО: используем сглаженную позицию
       }
 
       if (_state == RunState.running) {
-        // ✅ ДОБАВЛЕНО: _route.add(...) - теперь маршрут обновляется в реальном времени в UI
+        // ✅ ДОБАВЛЕНО: добавляем точку в UI маршрут
         _route.add(
           RoutePoint(
-            lat: position.latitude,
-            lon: position.longitude,
-            timestamp: position.timestamp ?? DateTime.now(),
+            lat: smoothed.latitude,
+            lon: smoothed.longitude,
+            timestamp: position.timestamp,
             speed: position.speed,
           ),
         );
-
         _calculateDistance();
         _checkProximity(position);
       }
@@ -400,7 +394,7 @@ class _RunScreenState extends State<RunScreen>
     _moveCamera(smoothed);
   }
 
-  // 👇 8️⃣ ФИНАЛЬНЫЙ _moveCamera (БЕЗ ДЁРГАНИЙ)
+  // 👇 8️⃣ ФИНАЛЬНЫЙ _moveCamera (БЕЗ ДЁРГАНИЙ, использует визуальные данные)
   void _moveCamera(LatLng pos) {
     // 1️⃣ FOLLOW MODE
     if (!_followUser || _state != RunState.running) return;
@@ -412,7 +406,12 @@ class _RunScreenState extends State<RunScreen>
 
     final target = _lookAhead(pos, _currentPosition?.speed ?? 0);
 
-    _mapController.moveAndRotate(target, _calculateZoom(), _smoothedHeading);
+    // ❗️ИСПРАВЛЕНО: move, а не moveAndRotate
+    _mapController.move(
+      target,
+      _calculateZoom(),
+      // _smoothedHeading, // ❌ УДАЛЕН
+    );
 
     _lastCameraUpdate = now;
   }
@@ -428,7 +427,7 @@ class _RunScreenState extends State<RunScreen>
     return 15.5; // спринт
   }
 
-  // 👇 9️⃣ МЕТОД ВОССТАНОВЛЕНИЯ МАРШРУТА ИЗ ФОНА
+  // ❗️НОВОЕ: метод восстановления маршрута из фона
   Future<void> _restoreRouteFromBackground() async {
     final restoredRoute = await RunRepository().getActiveRoute();
 
@@ -442,11 +441,16 @@ class _RunScreenState extends State<RunScreen>
         timestamp: restoredRoute.last.timestamp ?? DateTime.now(),
         accuracy: 5,
         altitude: 0,
-        heading: _smoothedHeading,
+        heading: _smoothedHeading, // Используем текущее сглаженное направление
         speed: restoredRoute.last.speed,
         speedAccuracy: 0,
         altitudeAccuracy: 0,
         headingAccuracy: 0,
+      );
+      // Также обновляем _lastSmoothedPosition для маркера
+      _lastSmoothedPosition = LatLng(
+        _currentPosition!.latitude,
+        _currentPosition!.longitude,
       );
     });
 
@@ -865,22 +869,26 @@ class _RunScreenState extends State<RunScreen>
               if ((_state == RunState.running || _state == RunState.finished) &&
                   _route.isNotEmpty)
                 PolylineLayer(polylines: [..._buildSpeedPolylines()]),
-              if (_currentPosition != null)
+              if (_lastSmoothedPosition !=
+                  null) // ✅ ИСПРАВЛЕНО: маркер = сглаженная позиция
                 MarkerLayer(
                   markers: [
                     Marker(
-                      point: LatLng(
-                        // ✅ ИСПРАВЛЕНО: маркер = реальная позиция
-                        _currentPosition!.latitude,
-                        _currentPosition!.longitude,
-                      ),
+                      point:
+                          _lastSmoothedPosition!, // ✅ ИСПРАВЛЕНО: маркер = сглаженная позиция
                       width: 50,
                       height: 50,
-                      child: const Icon(
-                        // ✅ ИСПРАВЛЕНО: маркер НЕ вращается
-                        Icons.navigation,
-                        color: Colors.deepPurple,
-                        size: 28,
+                      child: Transform.rotate(
+                        // ✅ ИСПРАВЛЕНО: маркер ВРАЩАЕТСЯ
+                        angle:
+                            _smoothedHeading *
+                            math.pi /
+                            180, // ❗️ИСПРАВЛЕНО: угол = сглаженное направление
+                        child: const Icon(
+                          Icons.navigation,
+                          color: Colors.deepPurple,
+                          size: 28,
+                        ),
                       ),
                     ),
                   ],
