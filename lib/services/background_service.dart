@@ -1,3 +1,4 @@
+// lib/services/background_service.dart
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -6,8 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:running_historian/config/constants.dart';
 import 'package:running_historian/storage/run_repository.dart';
 import 'package:running_historian/domain/route_point.dart';
-import 'package:running_historian/domain/run_session.dart'; // ✅ Добавить импорт
-import 'package:hive_flutter/hive_flutter.dart'; // ✅ Добавить импорт Hive
+import 'package:hive_flutter/hive_flutter.dart'; // Импорт Hive
 
 Future<void> initBackgroundService() async {
   final service = FlutterBackgroundService();
@@ -15,7 +15,7 @@ Future<void> initBackgroundService() async {
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
-      autoStart: false,
+      autoStart: false, // или true, если нужно автостартовать
       isForegroundMode: true,
       notificationChannelId: 'running_historian_channel',
       initialNotificationTitle: 'Running Historian',
@@ -33,14 +33,8 @@ Future<void> initBackgroundService() async {
 void onStart(ServiceInstance service) async {
   ui.DartPluginRegistrant.ensureInitialized();
 
-  // ✅ ИНИЦИАЛИЗАЦИЯ HIVE ДЛЯ ИЗОЛЯТА СЕРВИСА
-  await Hive.initFlutter();
-  // ✅ РЕГИСТРАЦИЯ АДАПТЕРОВ (КРИТИЧЕСКИ ВАЖНО)
-  Hive.registerAdapter(RoutePointAdapter());
-  Hive.registerAdapter(RunSessionAdapter()); // ✅ Добавлено
-
+  // 🔥 КРИТИЧЕСКИ ВАЖНО: вызвать setAsForegroundService() СРАЗУ ЖЕ
   if (service is AndroidServiceInstance) {
-    // 🔥 КРИТИЧЕСКИ ВАЖНО: вызвать setAsForegroundService() СРАЗУ ЖЕ
     service.setAsForegroundService();
 
     // Установить информацию для уведомления (опционально, но желательно сразу)
@@ -50,13 +44,25 @@ void onStart(ServiceInstance service) async {
     );
   }
 
-  // Запрашиваем разрешения ПОСЛЕ установки фонового сервиса
+  // --- ВСЁ, ЧТО НИЖЕ, МОЖЕТ БЫТЬ АСИНХРОННЫМ ---
+  // (но не должно блокировать выполнение основного потока сервиса надолго)
+
+  // 1. Инициализация Hive (теперь после setAsForegroundService)
+  await Hive.initFlutter();
+
+  // 2. Регистрация адаптеров (теперь после setAsForegroundService)
+  Hive.registerAdapter(RoutePointAdapter());
+  // Hive.registerAdapter(RunSessionAdapter()); // Если используете
+
+  // 3. Запрашиваем разрешения (теперь после setAsForegroundService)
   await _requestPermissions();
 
+  // 4. Подписываемся на остановку (теперь после setAsForegroundService)
   service.on('stopService').listen((event) {
     service.stopSelf();
   });
 
+  // 5. Запускаем логику (теперь после setAsForegroundService)
   _startLocationUpdates(service);
   _startFactTimer(service);
 }
@@ -78,6 +84,7 @@ void _startLocationUpdates(ServiceInstance service) {
     accuracy: LocationAccuracy.bestForNavigation,
     distanceFilter: 5,
     intervalDuration: const Duration(seconds: 1),
+    // ❗️ВАЖНО: используем ForegroundNotificationConfig из flutter_background_service_android
     foregroundNotificationConfig: const ForegroundNotificationConfig(
       notificationTitle: 'Running Historian',
       notificationText: 'Запись тренировки',
@@ -86,7 +93,7 @@ void _startLocationUpdates(ServiceInstance service) {
   );
 
   Geolocator.getPositionStream(locationSettings: locationSettings)
-      .listen((position) async { // ❗️async
+      .listen((position) async {
     final routePoint = RoutePoint(
       lat: position.latitude,
       lon: position.longitude,
