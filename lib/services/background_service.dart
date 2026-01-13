@@ -1,4 +1,3 @@
-// lib/services/background_service.dart
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -15,7 +14,7 @@ Future<void> initBackgroundService() async {
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
-      autoStart: false, // или true, если нужно автостартовать
+      autoStart: false,
       isForegroundMode: true,
       notificationChannelId: 'running_historian_channel',
       initialNotificationTitle: 'Running Historian',
@@ -31,89 +30,139 @@ Future<void> initBackgroundService() async {
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
+  // 1. ОБЯЗАТЕЛЬНО САМОЕ ПЕРВОЕ: Инициализация Dart для плагинов
   ui.DartPluginRegistrant.ensureInitialized();
 
-  // 🔥 КРИТИЧЕСКИ ВАЖНО: вызвать setAsForegroundService() СРАЗУ ЖЕ
+  // 2. НЕМЕДЛЕННЫЙ ПЕРЕХОД В FOREGROUND (в течение первых миллисекунд)
   if (service is AndroidServiceInstance) {
     service.setAsForegroundService();
-
-    // Установить информацию для уведомления (опционально, но желательно сразу)
     service.setForegroundNotificationInfo(
       title: "Running Historian",
-      content: "Запись тренировки активна",
+      content: "Запуск сервиса...",
     );
   }
 
-  // --- ВСЁ, ЧТО НИЖЕ, МОЖЕТ БЫТЬ АСИНХРОННЫМ ---
-  // (но не должно блокировать выполнение основного потока сервиса надолго)
-
-  // 1. Инициализация Hive (теперь после setAsForegroundService)
-  await Hive.initFlutter();
-
-  // 2. Регистрация адаптеров (теперь после setAsForegroundService)
-  Hive.registerAdapter(RoutePointAdapter());
-  // Hive.registerAdapter(RunSessionAdapter()); // Если используете
-
-  // 3. Запрашиваем разрешения (теперь после setAsForegroundService)
-  await _requestPermissions();
-
-  // 4. Подписываемся на остановку (теперь после setAsForegroundService)
-  service.on('stopService').listen((event) {
-    service.stopSelf();
+  // 3. ЗАПУСК ОСНОВНОЙ ЛОГИКИ В ОТДЕЛЬНОЙ "МИКРО-ЗАДАЧЕ", чтобы не блокировать поток
+  // Это гарантирует, что setAsForegroundService() уже отработал.
+  Future.microtask(() async {
+    await _initializeService(service);
   });
-
-  // 5. Запускаем логику (теперь после setAsForegroundService)
-  _startLocationUpdates(service);
-  _startFactTimer(service);
 }
 
-Future<void> _requestPermissions() async {
+// ВСЮ тяжелую инициализацию выносим в отдельную асинхронную функцию
+Future<void> _initializeService(ServiceInstance service) async {
+  try {
+    print("DEBUG: _initializeService started"); // Лог для отладки
+
+    // 3.1. Инициализация Hive (может быть медленной)
+    await Hive.initFlutter();
+    Hive.registerAdapter(RoutePointAdapter());
+    // Hive.registerAdapter(RunSessionAdapter()); // Если используете
+
+    print("DEBUG: Hive initialized and adapters registered"); // Лог для отладки
+
+    // 3.2. Запрос разрешений (может показывать системный диалог!)
+    final bool hasPermission = await _requestPermissions();
+    if (!hasPermission) {
+      print("DEBUG: Permissions not granted, stopping service logic"); // Лог для отладки
+      // Если нет разрешений, возможно, нужно остановить сервис или уведомить
+      service.invoke('permissionDenied');
+      // service.stopSelf(); // Опционально
+      return;
+    }
+
+    print("DEBUG: Permissions granted"); // Лог для отладки
+
+    // 3.3. Обновляем уведомление, чтобы показать, что сервис работает
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: "Running Historian",
+        content: "Запись тренировки активна",
+      );
+    }
+
+    print("DEBUG: Notification info updated"); // Лог для отладки
+
+    // 3.4. Подписываемся на остановку (после инициализации)
+    service.on('stopService').listen((event) {
+      service.stopSelf();
+    });
+
+    print("DEBUG: Stop listener added"); // Лог для отладки
+
+    // 3.5. Запускаем фоновые процессы
+    _startLocationUpdates(service);
+    _startFactTimer(service);
+
+    print("DEBUG: Location updates and fact timer started"); // Лог для отладки
+
+  } catch (e, stack) {
+    // КРИТИЧЕСКИ ВАЖНО: Логируем любую ошибку при инициализации
+    print("FATAL: Ошибка инициализации фонового сервиса: $e, $stack");
+    // Если сервис упал здесь, он перезапустится системой (autoStart: true),
+    // но ошибка в логах поможет понять причину.
+  }
+}
+
+Future<bool> _requestPermissions() async {
   LocationPermission permission = await Geolocator.checkPermission();
 
   if (permission == LocationPermission.denied) {
+    print("DEBUG: Requesting permission"); // Лог для отладки
     permission = await Geolocator.requestPermission();
   }
 
   if (permission == LocationPermission.deniedForever) {
     print('Разрешение на геолокацию отклонено навсегда');
+    return false;
   }
+
+  return permission == LocationPermission.always || permission == LocationPermission.whileInUse;
 }
 
 void _startLocationUpdates(ServiceInstance service) {
-  final locationSettings = AndroidSettings(
-    accuracy: LocationAccuracy.bestForNavigation,
-    distanceFilter: 5,
-    intervalDuration: const Duration(seconds: 1),
-    // ❗️ВАЖНО: используем ForegroundNotificationConfig из flutter_background_service_android
-    foregroundNotificationConfig: const ForegroundNotificationConfig(
-      notificationTitle: 'Running Historian',
-      notificationText: 'Запись тренировки',
-      enableWakeLock: true,
-    ),
-  );
+  // Проверяем разрешения перед запуском потока (хотя они уже проверены, но на всякий случай)
+  Geolocator.isLocationServiceEnabled().then((enabled) {
+    if (!enabled) {
+      print("DEBUG: Location service is disabled");
+      return;
+    }
 
-  Geolocator.getPositionStream(locationSettings: locationSettings)
-      .listen((position) async {
-    final routePoint = RoutePoint(
-      lat: position.latitude,
-      lon: position.longitude,
-      timestamp: position.timestamp ?? DateTime.now(),
-      speed: position.speed,
+    final locationSettings = AndroidSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 5,
+      intervalDuration: const Duration(seconds: 1),
+      // ❗️ВАЖНО: используем ForegroundNotificationConfig из flutter_background_service_android
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
+        notificationTitle: 'Running Historian',
+        notificationText: 'Запись тренировки',
+        enableWakeLock: true,
+      ),
     );
 
-    // ✅ СОХРАНЯЕМ ТОЧКУ В Hive через RunRepository
-    await RunRepository().appendActivePoint(routePoint);
+    Geolocator.getPositionStream(locationSettings: locationSettings)
+        .listen((position) async {
+      final routePoint = RoutePoint(
+        lat: position.latitude,
+        lon: position.longitude,
+        timestamp: position.timestamp ?? DateTime.now(),
+        speed: position.speed,
+      );
 
-    // ✅ ОБЯЗАТЕЛЬНО: отправляем данные в UI для реального времени
-    service.invoke('locationUpdate', {
-      'lat': position.latitude,
-      'lon': position.longitude,
-      'timestamp': position.timestamp?.toIso8601String(), // для сериализации
-      'speed': position.speed,
-      'heading': position.heading, // если доступно
+      // ✅ СОХРАНЯЕМ ТОЧКУ В Hive через RunRepository
+      await RunRepository().appendActivePoint(routePoint);
+
+      // ✅ ОБЯЗАТЕЛЬНО: отправляем данные в UI для реального времени
+      service.invoke('locationUpdate', {
+        'lat': position.latitude,
+        'lon': position.longitude,
+        'timestamp': position.timestamp?.toIso8601String(), // для сериализации
+        'speed': position.speed,
+        'heading': position.heading, // если доступно
+      });
+    }, onError: (error) {
+      print('Ошибка фонового GPS: $error');
     });
-  }, onError: (error) {
-    print('Ошибка фонового GPS: $error');
   });
 }
 
