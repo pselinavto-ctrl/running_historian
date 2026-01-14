@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'dart:math' as math;
-import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
 import 'package:running_historian/config/constants.dart';
 import 'package:running_historian/services/tts_service.dart';
@@ -8,103 +6,84 @@ import 'package:running_historian/domain/landmark.dart';
 
 class FactsService {
   final TtsService tts;
-  final List<String> _shownFacts = [];
+  final Set<String> _shownPoiIds = {}; // ID показанных POI в этой сессии
+  final Set<int> _shownFactIndices = {}; // Индексы показанных фактов в этой сессии
 
   FactsService(this.tts);
 
-  // Шаблоны речи
-  final List<String> _intros = [
-    "Знаете интересный момент:",
-    "Мало кто знает, но",
-    "Обратите внимание:",
-    "Любопытный факт:",
-  ];
-
+  // Проверка близости к POI
   Future<void> checkProximityToPoi(Position position) async {
     for (var landmark in kLandmarks) {
-      double distance = _calculateDistance(position, landmark);
+      double distance = Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        landmark.lat,
+        landmark.lon,
+      );
 
-      if (distance <= landmark.radius && !_shownFacts.contains(landmark.id)) {
-        _shownFacts.add(landmark.id);
+      // Если в радиусе 50 метров и ещё не показывали в этой сессии
+      if (distance <= kPoiTriggerRadius && !_shownPoiIds.contains(landmark.id)) {
+        _shownPoiIds.add(landmark.id);
 
-        String fact = await _getFactForLandmark(landmark, position);
+        // Форматируем речь
+        String fact = _formatPoiFact(landmark);
         await tts.speak(fact);
+
+        // Можно добавить логику для добавления в статистику
+        return; // Озвучиваем только один POI за раз
       }
     }
   }
 
-  double _calculateDistance(Position pos1, Landmark pos2) {
-    const double earthRadius = 6371000;
-    double dLat = (pos2.lat - pos1.latitude) * (math.pi / 180);
-    double dLon = (pos2.lon - pos1.longitude) * (math.pi / 180);
-    double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(pos1.latitude * (math.pi / 180)) *
-            math.cos(pos2.lat * (math.pi / 180)) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
-    return earthRadius * c;
+  // Форматирование факта о POI
+  String _formatPoiFact(Landmark landmark) {
+    final intros = [
+      "Справа от вас",
+      "Обратите внимание",
+      "Рядом с вами",
+      "Прямо перед вами",
+    ];
+
+    final intro = intros[DateTime.now().millisecondsSinceEpoch % intros.length];
+    return "$intro ${landmark.name}. ${landmark.fact}";
   }
 
-  Future<String> _getFactForLandmark(
-      Landmark landmark, Position position) async {
-    // Проверяем интернет
-    bool hasInternet = await _hasInternet();
+  // Выбор общего факта (с фильтрацией уже показанных)
+  String? getGeneralFact(List<int> alreadySpokenGlobal) {
+    // Все возможные индексы
+    final allIndices = List.generate(kGeneralFacts.length, (i) => i);
 
-    if (hasInternet) {
-      // Запрашиваем онлайн-факт из Wikipedia
-      String onlineFact = await _fetchWikipediaFact(landmark);
-      if (onlineFact.isNotEmpty) {
-        return _humanizeFact(onlineFact);
-      }
+    // Фильтруем: убираем уже показанные в этой сессии И в глобальном банке
+    final availableIndices = allIndices.where((index) {
+      return !_shownFactIndices.contains(index) && !alreadySpokenGlobal.contains(index);
+    }).toList();
+
+    if (availableIndices.isEmpty) {
+      // Если все факты уже использованы - разрешаем повтор
+      return _getRandomFact();
     }
 
-    // Используем офлайн-факт
-    return _humanizeFact(landmark.fact);
+    // Выбираем случайный из доступных
+    final randomIndex = availableIndices[math.Random().nextInt(availableIndices.length)];
+    _shownFactIndices.add(randomIndex);
+
+    return "Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}";
   }
 
-  Future<bool> _hasInternet() async {
-    try {
-      final result = await http
-          .get(Uri.parse('https://httpbin.org/ip'))
-          .timeout(Duration(seconds: 3));
-      return result.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+  // Запасной вариант: случайный факт (даже если уже был)
+  String _getRandomFact() {
+    final randomIndex = math.Random().nextInt(kGeneralFacts.length);
+    return "Ещё один интересный факт: ${kGeneralFacts[randomIndex]}";
   }
 
-  Future<String> _fetchWikipediaFact(Landmark landmark) async {
-    try {
-      // Запрос к MediaWiki API
-      final response = await http
-          .get(
-            Uri.parse(
-                'https://ru.wikipedia.org/w/api.php?action=query&format=json&prop=extracts&exintro=1&explaintext=1&titles=${Uri.encodeComponent(landmark.name)}'),
-          )
-          .timeout(Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final pages = data['query']['pages'];
-        final pageId = pages.keys.first;
-        final extract = pages[pageId]['extract'] ?? '';
-
-        // Очищаем текст
-        return extract.split('.').first.trim();
-      }
-    } catch (e) {
-      print('Ошибка получения факта из Wikipedia: $e');
-    }
-    return '';
+  // Очистка состояния для новой тренировки
+  void clearSessionState() {
+    _shownPoiIds.clear();
+    _shownFactIndices.clear();
   }
 
-  String _humanizeFact(String fact) {
-    // Выбираем случайную подводку
-    String intro =
-        _intros[DateTime.now().millisecondsSinceEpoch % _intros.length];
-
-    // Собираем фразу
-    return '$intro $fact';
+  // Получение показанных индексов для сохранения
+  List<int> getSpokenIndices() {
+    return _shownFactIndices.toList();
   }
 }

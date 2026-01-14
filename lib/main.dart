@@ -1,10 +1,10 @@
-// lib/main.dart
 import 'package:flutter/material.dart';
-import 'package:hive_flutter/hive_flutter.dart'; // ✅ Добавить импорт
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:running_historian/ui/screens/welcome_screen.dart'; // 👈 ИМПОРТ ДОБАВЛЕН
 import 'package:running_historian/ui/screens/run_screen.dart';
 import 'package:running_historian/services/background_service.dart';
-import 'package:running_historian/domain/route_point.dart'; // ✅ Импорт RoutePoint
-import 'package:running_historian/domain/run_session.dart'; // ✅ Импорт RunSession
+import 'package:running_historian/domain/route_point.dart';
+import 'package:running_historian/domain/run_session.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,7 +13,7 @@ Future<void> main() async {
   await Hive.initFlutter();
   // ✅ РЕГИСТРАЦИЯ АДАПТЕРОВ
   Hive.registerAdapter(RoutePointAdapter());
-  Hive.registerAdapter(RunSessionAdapter()); // Если используете
+  Hive.registerAdapter(RunSessionAdapter());
 
   await Hive.openBox<RunSession>('run_sessions');
   await Hive.openBox<RoutePoint>('active_route');
@@ -31,9 +31,10 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Running Historian',
       theme: ThemeData(
-        primarySwatch: Colors.blue,
+        primarySwatch: Colors.deepPurple, // 👈 Поменял цвет для стиля
+        fontFamily: 'Inter', // 👈 Можно подключить шрифт позже
       ),
-      home: const RunScreen(), // или другой стартовый экран
+      home: const WelcomeScreen(), // 👈 ТЕПЕРЬ ЗАСТАВКА ПЕРВАЯ!
     );
   }
 }

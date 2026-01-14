@@ -23,9 +23,13 @@ class RunSession {
   @HiveField(5)
   final List<RoutePoint> route; // ❗️Важно: использует RoutePoint
 
-  // 👇 НОВОЕ: список сказанных индексов
+  // 👇 ОБНОВЛЕНО: список сказанных индексов
   @HiveField(6)
   final List<int> spokenFactIndices;
+
+  // 👇 НОВОЕ: показанные POI в этой сессии
+  @HiveField(7)
+  final List<String> shownPoiIds;
 
   RunSession({
     required this.id,
@@ -35,10 +39,14 @@ class RunSession {
     required this.factsCount,
     required this.route,
     this.spokenFactIndices = const [],
+    this.shownPoiIds = const [],
   });
 
-  // 👇 НОВОЕ: конструктор для обновления сказанных фактов
-  RunSession copyWith({List<int>? spokenFactIndices}) {
+  // 👇 ОБНОВЛЕНО: конструктор для обновления сказанных фактов и POI
+  RunSession copyWith({
+    List<int>? spokenFactIndices,
+    List<String>? shownPoiIds,
+  }) {
     return RunSession(
       id: id,
       date: date,
@@ -47,6 +55,7 @@ class RunSession {
       factsCount: factsCount,
       route: route,
       spokenFactIndices: spokenFactIndices ?? this.spokenFactIndices,
+      shownPoiIds: shownPoiIds ?? this.shownPoiIds,
     );
   }
 }

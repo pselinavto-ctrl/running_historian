@@ -46,7 +46,7 @@ class _RunScreenState extends State<RunScreen>
   Duration _elapsedRunTime = Duration.zero;
   final AudioService _audio = AudioService();
   late final TtsService _tts;
-  late final FactsService _factsService;
+  late final FactsService _factsService; // ❗️ИСПРАВЛЕНО: late final
   List<RoutePoint> _route = []; // Теперь это восстановленный маршрут из Hive
   DateTime? _runStartTime;
   RunSession? _currentSession;
@@ -58,7 +58,8 @@ class _RunScreenState extends State<RunScreen>
   DateTime? _lastFactTime;
   double _heading = 0.0; // Это raw heading до сглаживания
   LatLng? _startPoint;
-  final Set<int> _lastFactIndices = <int>{};
+  final Set<int> _lastFactIndices =
+      <int>{}; // ❗️НЕ ИСПОЛЬЗУЕТСЯ, ОСТАВЛЕНО ДЛЯ СОВМЕСТИМОСТИ
   RunState _state = RunState.searchingGps;
   Timer? _countdownTimer;
   int _countdown = 3;
@@ -88,11 +89,15 @@ class _RunScreenState extends State<RunScreen>
   // ❗️НОВОЕ: поле для последней сглаженной позиции (для маркера)
   LatLng? _lastSmoothedPosition;
 
+  // 👇 5️⃣ НОВЫЕ ПОЛЯ: для показанных POI и фактов в этой сессии
+  final Set<String> _shownPoiIds = <String>{}; // ID показанных POI
+  final Set<int> _spokenFactIndices = <int>{}; // Индексы показанных фактов
+
   @override
   void initState() {
     super.initState();
     _tts = TtsService(_audio)..init();
-    _factsService = FactsService(_tts);
+    _factsService = FactsService(_tts); // ❗️ИСПРАВЛЕНО: инициализация
     _initAnimations();
     _loadHistory();
     _requestLocationPermissionAndStart();
@@ -279,7 +284,6 @@ class _RunScreenState extends State<RunScreen>
       next.latitude,
       next.longitude,
     );
-
     return d > _maxJumpMeters;
   }
 
@@ -387,6 +391,7 @@ class _RunScreenState extends State<RunScreen>
           ),
         );
         _calculateDistance();
+        // ❗️ИСПРАВЛЕНО: передаём позицию в _checkProximity
         _checkProximity(position);
       }
     });
@@ -501,11 +506,13 @@ class _RunScreenState extends State<RunScreen>
     _distanceController.forward();
   }
 
+  // ❗️ИСПРАВЛЕНО: _checkProximity теперь принимает Position
   void _checkProximity(Position position) {
+    // ❗️ИСПРАВЛЕНО: передаём позицию в factsService
     _factsService.checkProximityToPoi(position);
   }
 
-  // ❗️ИСПРАВЛЕНО: _startGeneralFacts с кэшированием и await
+  // ❗️ИСПРАВЛЕНО: _startGeneralFacts с кэшированием и await, интеграцией FactsService
   void _startGeneralFacts() {
     _factsTimer?.cancel();
     _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
@@ -523,38 +530,182 @@ class _RunScreenState extends State<RunScreen>
           _cachedAllSpokenIndices =
               allSpokenIndices; // Кэшируем на время сессии
 
-          final availableIndices = <int>[];
-          for (int i = 0; i < kGeneralFacts.length; i++) {
-            if (!allSpokenIndices.contains(i)) {
-              // Теперь contains вызывается на List<int>
-              availableIndices.add(i);
-            }
-          }
+          // ❗️ИСПРАВЛЕНО: получаем факт через FactsService
+          final factText = _factsService.getGeneralFact(allSpokenIndices);
 
-          int? randomIndex;
-          if (availableIndices.isNotEmpty) {
-            randomIndex =
-                availableIndices[DateTime.now().millisecondsSinceEpoch %
-                    availableIndices.length];
-          } else {
-            randomIndex =
-                DateTime.now().millisecondsSinceEpoch % kGeneralFacts.length;
-          }
+          if (factText != null) {
+            _tts.speak(factText);
 
-          _tts.speak(
-            "Интересный факт о Ростове-на-Дону: ${kGeneralFacts[randomIndex]}",
-          );
-
-          setState(() {
-            _factsCount++;
-          });
-
-          if (randomIndex != null) {
-            _lastFactIndices.add(randomIndex);
+            setState(() {
+              _factsCount++;
+              // ❗️ИСПРАВЛЕНО: обновляем список показанных фактов из сервиса
+              _spokenFactIndices.addAll(_factsService.getSpokenIndices());
+            });
           }
         }
       }
     });
+  }
+
+  // 👇 ДОБАВЬ ЭТОТ МЕТОД В КЛАСС _RunScreenState
+  Widget _buildAudioGuideWidget() {
+    // Определяем статус гида
+    String status;
+    Color statusColor;
+    IconData statusIcon;
+
+    if (_tts.isSpeaking) {
+      status = "Рассказываю...";
+      statusColor = Colors.yellow;
+      statusIcon = Icons.headphones;
+    } else if (_tts.isPaused) {
+      status = "Гид на паузе";
+      statusColor = Colors.grey;
+      statusIcon = Icons.headset_off;
+    } else {
+      status = "Слушаю город";
+      statusColor = Colors.green;
+      statusIcon = Icons.record_voice_over;
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: statusColor.withOpacity(0.5), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: statusColor.withOpacity(0.3),
+            blurRadius: 15,
+            spreadRadius: 3,
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.15),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(statusIcon, color: statusColor, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'АУДИО-ГИД',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  status,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          // Кнопка паузы/продолжения
+          GestureDetector(
+            onTap: () {
+              if (_tts.isPaused) {
+                _tts.resume();
+              } else {
+                _tts.pause();
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                _tts.isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Кнопка пропуска
+          GestureDetector(
+            onTap: () {
+              _tts.stop();
+            },
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.skip_next_rounded,
+                color: Colors.white70,
+                size: 20,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 👇 ОБНОВЛЁННЫЙ МЕТОД _buildStatItem
+  Widget _buildStatItem({
+    required IconData icon,
+    required String value,
+    required String label,
+    required Color color,
+    double fontSize = 18, // 👈 ПАРАМЕТР ДЛЯ РАЗМЕРА ШРИФТА
+  }) {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8), // 👈 ВМЕСТО 10
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: color, size: 20), // 👈 ВМЕСТО 22
+        ),
+        const SizedBox(height: 6), // 👈 ВМЕСТО 8
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: fontSize, // 👈 ИСПОЛЬЗУЕМ ПАРАМЕТР
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 2), // 👈 ВМЕСТО 4
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11, // 👈 ВМЕСТО 12
+            fontWeight: FontWeight.w500,
+            color: Colors.white.withOpacity(0.7),
+          ),
+        ),
+      ],
+    );
   }
 
   void _speakButtonAction(String text) {
@@ -596,6 +747,9 @@ class _RunScreenState extends State<RunScreen>
         _smoothedPosition = null; // Сброс сглаженной позиции
         _smoothedHeading = 0.0; // Сброс сглаженного направления
         _elapsedRunTime = Duration.zero;
+
+        // 👇 5️⃣ ОЧИСТКА СЕССИОННОГО СОСТОЯНИЯ FactsService
+        _factsService.clearSessionState();
 
         if (_currentPosition != null) {
           _startPoint = LatLng(
@@ -696,7 +850,9 @@ class _RunScreenState extends State<RunScreen>
       duration: _elapsedRunTime.inSeconds,
       factsCount: _factsCount,
       route: _route, // Теперь _route - это восстановленный маршрут
-      spokenFactIndices: _lastFactIndices.toList(),
+      // 👇 5️⃣ СОХРАНЕНИЕ показанных индексов и POI
+      spokenFactIndices: _spokenFactIndices.toList(),
+      shownPoiIds: _shownPoiIds.toList(),
     );
 
     _currentSession = session;
@@ -709,7 +865,9 @@ class _RunScreenState extends State<RunScreen>
       });
     }
 
-    print("💾 Сессия сохранена: $_distance км, $_factsCount фактов");
+    print(
+      "💾 Сессия сохранена: $_distance км, $_factsCount фактов, ${_spokenFactIndices.length} индексов, ${_shownPoiIds.length} POI",
+    );
   }
 
   String get _currentPace {
@@ -962,114 +1120,106 @@ class _RunScreenState extends State<RunScreen>
               ),
             ],
           ),
+          // 👇 ОБНОВЛЁННЫЙ БЛОК СТАТИСТИКИ И АУДИО-ГИДА
           if (_state == RunState.running || _state == RunState.paused)
             Positioned(
-              top: 50,
-              left: 20,
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.7),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.route, color: Colors.white, size: 30),
-                        const SizedBox(width: 8),
-                        Text(
-                          _distance.toStringAsFixed(2),
-                          style: TextStyle(
-                            fontSize: 32,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        const Text(
-                          'км',
-                          style: TextStyle(fontSize: 16, color: Colors.white),
+              top: 12, // 👈 ВМЕСТО 40 (ближе к верху)
+              left: 12, // 👈 ВМЕСТО 20 (уменьшили отступы)
+              right: 12,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 1. СТАТИСТИКА (немного уменьшаем отступы)
+                  Container(
+                    padding: const EdgeInsets.all(16), // 👈 ВМЕСТО 20
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.85), // 👈 Чуть темнее
+                      borderRadius: BorderRadius.circular(20), // 👈 ВМЕСТО 25
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.15),
+                        width: 1,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.6),
+                          blurRadius: 15,
+                          spreadRadius: 3,
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    child: Column(
                       children: [
-                        Column(
+                        // Дистанция
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.baseline,
+                          textBaseline: TextBaseline.alphabetic,
                           children: [
-                            Icon(Icons.access_time, color: Colors.white),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${currentRunTime.inMinutes.remainder(60).toString().padLeft(2, '0')}:${(currentRunTime.inSeconds.remainder(60)).toString().padLeft(2, '0')}',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.white,
+                            ScaleTransition(
+                              scale: _distanceAnimation,
+                              child: Text(
+                                _distance.toStringAsFixed(2),
+                                style: const TextStyle(
+                                  fontSize: 36, // 👈 ВМЕСТО 42
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                  letterSpacing: -1,
+                                ),
                               ),
                             ),
+                            const SizedBox(width: 6),
                             const Text(
-                              'Время',
+                              'км',
                               style: TextStyle(
-                                fontSize: 12,
+                                fontSize: 16, // 👈 ВМЕСТО 18
+                                fontWeight: FontWeight.w600,
                                 color: Colors.white70,
                               ),
                             ),
                           ],
                         ),
-                        Column(
+                        const SizedBox(height: 16), // 👈 ВМЕСТО 20
+                        // Время, темп, калории
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Icon(Icons.speed, color: Colors.white),
-                            const SizedBox(height: 4),
-                            Text(
-                              currentPace,
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.white,
-                              ),
+                            _buildStatItem(
+                              icon: Icons.access_time_filled_rounded,
+                              value:
+                                  '${currentRunTime.inMinutes.remainder(60).toString().padLeft(2, '0')}:${(currentRunTime.inSeconds.remainder(60)).toString().padLeft(2, '0')}',
+                              label: 'Время',
+                              color: Colors.blue.shade300,
+                              fontSize: 18, // 👈 ДОБАВЛЕНО
                             ),
-                            const Text(
-                              'Темп',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.white70,
-                              ),
+                            _buildStatItem(
+                              icon: Icons.speed_rounded,
+                              value: currentPace,
+                              label: 'Темп',
+                              color: Colors.purple.shade300,
+                              fontSize: 18,
                             ),
-                          ],
-                        ),
-                        Column(
-                          children: [
-                            Icon(
-                              Icons.local_fire_department,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              currentCalories.toString(),
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.white,
-                              ),
-                            ),
-                            const Text(
-                              'Кал',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.white70,
-                              ),
+                            _buildStatItem(
+                              icon: Icons.local_fire_department_rounded,
+                              value: currentCalories.toString(),
+                              label: 'Кал',
+                              color: Colors.orange.shade300,
+                              fontSize: 18,
                             ),
                           ],
                         ),
                       ],
                     ),
-                  ],
-                ),
+                  ),
+
+                  // 2. АУДИО-ГИД (под статистикой)
+                  if (_state != RunState.init &&
+                      _state != RunState.searchingGps &&
+                      _state != RunState.countdown)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8), // 👈 ВМЕСТО 12
+                      child: _buildAudioGuideWidget(),
+                    ),
+                ],
               ),
             ),
           if (_state == RunState.searchingGps)
@@ -1257,6 +1407,8 @@ class _RunScreenState extends State<RunScreen>
                         _smoothedPosition = null; // Сброс сглаженной позиции
                         _smoothedHeading = 0.0; // Сброс сглаженного направления
                         _cachedAllSpokenIndices = null; // Сброс кэша индексов
+                        // 👇 5️⃣ ОЧИСТКА СЕССИОННОГО СОСТОЯНИЯ FactsService (на всякий случай)
+                        _factsService.clearSessionState();
                       });
                     },
                     style: ElevatedButton.styleFrom(
