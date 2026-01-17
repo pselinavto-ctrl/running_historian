@@ -17,6 +17,8 @@ import 'package:running_historian/services/background_service.dart';
 import 'package:running_historian/services/facts_service.dart';
 import 'package:running_historian/ui/screens/session_detail_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:running_historian/services/map_tile_cache_service.dart';
+import 'package:running_historian/services/cached_tile_provider.dart';
 
 // Стейт-машина
 enum RunState {
@@ -47,6 +49,7 @@ class _RunScreenState extends State<RunScreen>
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService; // ❗️ИСПРАВЛЕНО: late final
+  final MapTileCacheService _tileCache = MapTileCacheService(); // Кэш тайлов карты
   List<RoutePoint> _route = []; // Теперь это восстановленный маршрут из Hive
   DateTime? _runStartTime;
   RunSession? _currentSession;
@@ -98,6 +101,7 @@ class _RunScreenState extends State<RunScreen>
     super.initState();
     _tts = TtsService(_audio)..init();
     _factsService = FactsService(_tts); // ❗️ИСПРАВЛЕНО: инициализация
+    _tileCache.init(); // Инициализация кэша карты
     _initAnimations();
     _loadHistory();
     _requestLocationPermissionAndStart();
@@ -378,6 +382,15 @@ class _RunScreenState extends State<RunScreen>
           smoothed,
           15,
         ); // ❗️ИСПРАВЛЕНО: используем сглаженную позицию
+        
+        // 🗺️ Предзагружаем тайлы карты для области 30x30 км (радиус 15 км)
+        _tileCache.preloadArea(
+          smoothed,
+          radiusKm: 15.0,
+          zoomLevels: const [13, 14, 15, 16], // Уровни зума для кэширования
+        ).catchError((e) {
+          print('⚠️ Ошибка предзагрузки тайлов: $e');
+        });
       }
 
       if (_state == RunState.running) {
@@ -1023,6 +1036,12 @@ class _RunScreenState extends State<RunScreen>
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.running_historian',
+                maxNativeZoom: 19,
+                maxZoom: 20,
+                keepBuffer: 2,
+                tileBuilder: (context, tile, options) {
+                  return buildCachedTile(tile, options, _tileCache);
+                },
               ),
               if ((_state == RunState.running || _state == RunState.finished) &&
                   _route.isNotEmpty)

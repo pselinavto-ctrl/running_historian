@@ -21,6 +21,7 @@ dependencies:
 
   path_provider: ^2.0.15
   path: ^1.8.2
+  http: ^1.2.0
 
   hive: ^2.2.3
   hive_flutter: ^1.1.0
@@ -47,4 +48,3 @@ flutter:
   uses-material-design: true
   assets:
     - assets/music.mp3
-    - assets/images/  # 👈 ДОБАВЛЕНО ДЛЯ ИЗОБРАЖЕНИЙ В ИСТОРИИ
