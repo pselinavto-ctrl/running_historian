@@ -1033,7 +1033,7 @@ class _RunScreenState extends State<RunScreen>
             children: [
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.running_historian',
+                userAgentPackageName: 'com.yourdomain.running_historian', // или любое другое уникальное имя
               ),
               if ((_state == RunState.running || _state == RunState.finished) &&
                   _route.isNotEmpty)
