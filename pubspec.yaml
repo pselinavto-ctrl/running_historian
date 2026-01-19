@@ -47,4 +47,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/music.mp3
-    - assets/images/  # 👈 ДОБАВЛЕНО ДЛЯ ИЗОБРАЖЕНИЙ В ИСТОРИИ
+   # - assets/images/  # 👈 ДОБАВЛЕНО ДЛЯ ИЗОБРАЖЕНИЙ В ИСТОРИИ

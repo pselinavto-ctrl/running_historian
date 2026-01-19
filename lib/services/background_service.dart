@@ -1,7 +1,8 @@
+// lib/services/background_service.dart
 import 'dart:async';
 import 'dart:ui' as ui;
+// ❌ УБРАНО: import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:running_historian/config/constants.dart';
 import 'package:running_historian/storage/run_repository.dart';
@@ -15,11 +16,9 @@ Future<void> initBackgroundService() async {
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
       autoStart: false,
-      isForegroundMode: true,
-      notificationChannelId: 'running_historian_channel',
-      initialNotificationTitle: 'Running Historian',
-      initialNotificationContent: 'Аудиогид работает',
-      foregroundServiceNotificationId: 777,
+      isForegroundMode: false, // ❗️ВАЖНО: isForegroundMode = false
+      // ❌ УБРАНО: notificationChannelId, initialNotificationTitle, и т.д.
+      // foregroundServiceNotificationId: 777, // Не нужно
     ),
     iosConfiguration: IosConfiguration(
       autoStart: false,
@@ -33,17 +32,13 @@ void onStart(ServiceInstance service) async {
   // 1. ОБЯЗАТЕЛЬНО САМОЕ ПЕРВОЕ: Инициализация Dart для плагинов
   ui.DartPluginRegistrant.ensureInitialized();
 
-  // 2. НЕМЕДЛЕННЫЙ ПЕРЕХОД В FOREGROUND (в течение первых миллисекунд)
-  if (service is AndroidServiceInstance) {
-    service.setAsForegroundService();
-    service.setForegroundNotificationInfo(
-      title: "Running Historian",
-      content: "Запуск сервиса...",
-    );
-  }
+  // 2. НЕ ВЫЗЫВАЕМ setAsForegroundService() НИКОГДА!
+  // if (service is AndroidServiceInstance) {
+  //   service.setAsForegroundService();
+  //   service.setForegroundNotificationInfo(...);
+  // }
 
   // 3. ЗАПУСК ОСНОВНОЙ ЛОГИКИ В ОТДЕЛЬНОЙ "МИКРО-ЗАДАЧЕ", чтобы не блокировать поток
-  // Это гарантирует, что setAsForegroundService() уже отработал.
   Future.microtask(() async {
     await _initializeService(service);
   });
@@ -73,17 +68,7 @@ Future<void> _initializeService(ServiceInstance service) async {
 
     print("DEBUG: Permissions granted"); // Лог для отладки
 
-    // 3.3. Обновляем уведомление, чтобы показать, что сервис работает
-    if (service is AndroidServiceInstance) {
-      service.setForegroundNotificationInfo(
-        title: "Running Historian",
-        content: "Запись тренировки активна",
-      );
-    }
-
-    print("DEBUG: Notification info updated"); // Лог для отладки
-
-    // 3.4. Подписываемся на остановку (после инициализации)
+    // 3.3. Подписываемся на остановку (после инициализации)
     service.on('stopService').listen((event) {
       service.stopSelf();
     });
@@ -132,12 +117,10 @@ void _startLocationUpdates(ServiceInstance service) {
       accuracy: LocationAccuracy.bestForNavigation,
       distanceFilter: 5,
       intervalDuration: const Duration(seconds: 1),
-      // ❗️ВАЖНО: используем ForegroundNotificationConfig из flutter_background_service_android
-      foregroundNotificationConfig: const ForegroundNotificationConfig(
-        notificationTitle: 'Running Historian',
-        notificationText: 'Запись тренировки',
-        enableWakeLock: true,
-      ),
+      // ❗️ВАЖНО: ИСПОЛЬЗУЕМ foregroundNotificationConfig из flutter_background_service_android ТОЛЬКО ДЛЯ GEOLOCATOR!
+      // Но! flutter_background_service_android не должен использоваться в изоляте сервиса!
+      // Поэтому, мы НЕ ПЕРЕДАЕМ foregroundNotificationConfig сюда.
+      // Geolocator сам создаст уведомление для своего ForegroundService.
     );
 
     Geolocator.getPositionStream(locationSettings: locationSettings)

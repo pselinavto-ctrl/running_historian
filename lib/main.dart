@@ -18,9 +18,15 @@ Future<void> main() async {
   await Hive.openBox<RunSession>('run_sessions');
   await Hive.openBox<RoutePoint>('active_route');
 
-  await initBackgroundService();
+  // ⚠️ НЕ запускайте сервис здесь
+  // await initBackgroundService();
 
   runApp(const MyApp());
+  
+  // ⚠️ Запускайте сервис ПОСЛЕ runApp
+  // await initBackgroundService();
+  // final service = FlutterBackgroundService();
+  // await service.startService();
 }
 
 class MyApp extends StatelessWidget {

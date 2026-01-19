@@ -47,6 +47,7 @@ class _RunScreenState extends State<RunScreen>
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService; // ❗️ИСПРАВЛЕНО: late final
+
   List<RoutePoint> _route = []; // Теперь это восстановленный маршрут из Hive
   DateTime? _runStartTime;
   RunSession? _currentSession;
@@ -157,12 +158,20 @@ class _RunScreenState extends State<RunScreen>
   }
 
   void _startBackgroundService() async {
+    // ⚠️ Сначала настройте
     await initBackgroundService();
-    bool started = await FlutterBackgroundService().startService();
+
+    // ⚠️ Затем запустите
+    final service = FlutterBackgroundService();
+    bool started = await service.startService();
+
     print('SERVICE STARTED = $started');
 
     if (started) {
-      final isRunning = await FlutterBackgroundService().isRunning();
+      // ⚠️ Ждем немного для инициализации
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      final isRunning = await service.isRunning();
       print('SERVICE RUNNING = $isRunning');
     } else {
       print('FAILED TO START SERVICE');
@@ -185,12 +194,15 @@ class _RunScreenState extends State<RunScreen>
       );
       if (mounted) {
         setState(() {
+          final LatLng latLng = LatLng(position.latitude, position.longitude);
+
           _currentPosition = position;
-          _mapController.move(
-            LatLng(position.latitude, position.longitude),
-            15,
-          );
-          // ✅ УСТАНОВИТЬ СОСТОЯНИЕ READY ПРИ ПОЛУЧЕНИИ ПОЗИЦИИ
+
+          _smoothedPosition = latLng;
+          _lastSmoothedPosition = latLng;
+
+          _mapController.move(latLng, 15);
+
           if (_state == RunState.searchingGps) {
             _state = RunState.ready;
           }
@@ -532,7 +544,6 @@ class _RunScreenState extends State<RunScreen>
 
           // ❗️ИСПРАВЛЕНО: получаем факт через FactsService
           final factText = _factsService.getGeneralFact(allSpokenIndices);
-
           if (factText != null) {
             _tts.speak(factText);
 
