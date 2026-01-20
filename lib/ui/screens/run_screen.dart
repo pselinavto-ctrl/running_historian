@@ -17,6 +17,8 @@ import 'package:running_historian/services/background_service.dart';
 import 'package:running_historian/services/facts_service.dart';
 import 'package:running_historian/ui/screens/session_detail_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:running_historian/services/map_tile_cache_service.dart';
+import 'package:running_historian/services/cached_tile_provider.dart';
 
 // Стейт-машина
 enum RunState {
@@ -47,6 +49,8 @@ class _RunScreenState extends State<RunScreen>
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService; // ❗️ИСПРАВЛЕНО: late final
+
+  // ❗️УБРАНО: final MapTileCacheService _tileCache = MapTileCacheService(); // Кэш тайлов карты
 
   List<RoutePoint> _route = []; // Теперь это восстановленный маршрут из Hive
   DateTime? _runStartTime;
@@ -99,6 +103,7 @@ class _RunScreenState extends State<RunScreen>
     super.initState();
     _tts = TtsService(_audio)..init();
     _factsService = FactsService(_tts); // ❗️ИСПРАВЛЕНО: инициализация
+    // ❗️УБРАНО: _tileCache.init(); // Инициализация кэша карты
     _initAnimations();
     _loadHistory();
     _requestLocationPermissionAndStart();
@@ -160,11 +165,9 @@ class _RunScreenState extends State<RunScreen>
   void _startBackgroundService() async {
     // ⚠️ Сначала настройте
     await initBackgroundService();
-
     // ⚠️ Затем запустите
     final service = FlutterBackgroundService();
     bool started = await service.startService();
-
     print('SERVICE STARTED = $started');
 
     if (started) {
@@ -195,14 +198,11 @@ class _RunScreenState extends State<RunScreen>
       if (mounted) {
         setState(() {
           final LatLng latLng = LatLng(position.latitude, position.longitude);
-
           _currentPosition = position;
-
           _smoothedPosition = latLng;
           _lastSmoothedPosition = latLng;
-
           _mapController.move(latLng, 15);
-
+          // ✅ УСТАНОВИТЬ СОСТОЯНИЕ READY ПРИ ПОЛУЧЕНИИ ПОЗИЦИИ
           if (_state == RunState.searchingGps) {
             _state = RunState.ready;
           }
@@ -390,6 +390,7 @@ class _RunScreenState extends State<RunScreen>
           smoothed,
           15,
         ); // ❗️ИСПРАВЛЕНО: используем сглаженную позицию
+        // ❗️УБРАНО: _tileCache.preloadArea(...)
       }
 
       if (_state == RunState.running) {
@@ -1033,7 +1034,17 @@ class _RunScreenState extends State<RunScreen>
             children: [
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.yourdomain.running_historian', // или любое другое уникальное имя
+                // ❗️ИСПРАВЛЕНО: уникальное имя пакета для OSM
+                userAgentPackageName: 'com.yourdomain.running_historian',
+                // ❗️УБРАНО: tileBuilder, buildCachedTile
+                // ❗️УБРАНО: maxNativeZoom, maxZoom, keepBuffer (не нужно с CachedTileProvider)
+                tileProvider: CachedTileProvider(
+                  cacheName: 'osm_tiles_running_app',
+                  maximumCacheSize: 500 * 1024 * 1024, // 500 MB
+                  maximumCacheCount: 10000,
+                  cacheCleaningStrategy: CacheCleaningStrategy.lru,
+                  tileProvider: NetworkTileProvider(),
+                ),
               ),
               if ((_state == RunState.running || _state == RunState.finished) &&
                   _route.isNotEmpty)
