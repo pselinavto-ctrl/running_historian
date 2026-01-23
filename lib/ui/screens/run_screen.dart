@@ -1,7 +1,9 @@
+// lib/ui/screens/run_screen.dart
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:geolocator/geolocator.dart'; // ✅ ДОБАВЛЕН ИМПОРТ GEOFLOATER
+import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:running_historian/domain/route_point.dart';
@@ -17,6 +19,7 @@ import 'package:running_historian/services/background_service.dart';
 import 'package:running_historian/services/facts_service.dart';
 import 'package:running_historian/ui/screens/session_detail_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:running_historian/services/poi_service.dart'; // 👈 ДОБАВЛЕНО
 
 // Стейт-машина
 enum RunState {
@@ -46,9 +49,9 @@ class _RunScreenState extends State<RunScreen>
   Duration _elapsedRunTime = Duration.zero;
   final AudioService _audio = AudioService();
   late final TtsService _tts;
-  late final FactsService _factsService; // ❗️ИСПРАВЛЕНО: late final
-
-  List<RoutePoint> _route = []; // Теперь это восстановленный маршрут из Hive
+  late final FactsService _factsService;
+  late final PoiService _poiService; // 👈 ДОБАВЛЕНО
+  List<RoutePoint> _route = [];
   DateTime? _runStartTime;
   RunSession? _currentSession;
   int _factsCount = 0;
@@ -57,10 +60,9 @@ class _RunScreenState extends State<RunScreen>
   List<RunSession> _history = [];
   MusicMode _musicMode = MusicMode.external;
   DateTime? _lastFactTime;
-  double _heading = 0.0; // Это raw heading до сглаживания
+  double _heading = 0.0;
   LatLng? _startPoint;
-  final Set<int> _lastFactIndices =
-      <int>{}; // ❗️НЕ ИСПОЛЬЗУЕТСЯ, ОСТАВЛЕНО ДЛЯ СОВМЕСТИМОСТИ
+  final Set<int> _lastFactIndices = <int>{};
   RunState _state = RunState.searchingGps;
   Timer? _countdownTimer;
   int _countdown = 3;
@@ -69,85 +71,68 @@ class _RunScreenState extends State<RunScreen>
   late AnimationController _factController;
   late Animation<double> _factAnimation;
 
-  // 👇 1️⃣ ДОБАВЬ ПОЛЯ (ОБЯЗАТЕЛЬНО)
-  LatLng? _smoothedPosition;
-  double _smoothedHeading = 0.0;
-
-  DateTime? _lastCameraUpdate;
-  DateTime? _lastValidGpsTime;
-
-  static const double _maxJumpMeters = 40; // анти-телепортация
-  static const Duration _cameraInterval = Duration(
-    milliseconds: 120,
-  ); // 5️⃣ УВЕЛИЧЕНА ЧАСТОТА
-
-  // 1️⃣ FOLLOW MODE (новое поле)
+  // FOLLOW MODE
   bool _followUser = true;
 
-  // ❗️ИСПРАВЛЕНО: добавлено поле для кэширования индексов
+  // Сглаживание
+  LatLng? _smoothedPosition;
+  double _smoothedHeading = 0.0;
+  DateTime? _lastCameraUpdate;
+  DateTime? _lastValidGpsTime;
+  static const double _maxJumpMeters = 40;
+  static const Duration _cameraInterval = Duration(milliseconds: 120);
+
+  // Кэширование
   List<int>? _cachedAllSpokenIndices;
 
-  // ❗️НОВОЕ: поле для последней сглаженной позиции (для маркера)
+  // Последняя сглаженная позиция
   LatLng? _lastSmoothedPosition;
 
-  // 👇 5️⃣ НОВЫЕ ПОЛЯ: для показанных POI и фактов в этой сессии
-  final Set<String> _shownPoiIds = <String>{}; // ID показанных POI
-  final Set<int> _spokenFactIndices = <int>{}; // Индексы показанных фактов
+  // Сессионное состояние
+  final Set<String> _shownPoiIds = <String>{};
+  final Set<int> _spokenFactIndices = <int>{};
 
   @override
   void initState() {
     super.initState();
     _tts = TtsService(_audio)..init();
-    _factsService = FactsService(_tts); // ❗️ИСПРАВЛЕНО: инициализация
+    _factsService = FactsService(_tts);
+    _poiService = PoiService()..init(); // 👈 ИНИЦИАЛИЗАЦИЯ
     _initAnimations();
     _loadHistory();
     _requestLocationPermissionAndStart();
-    // 👇 ДОБАВИТЬ НАБЛЮДАТЕЛЬ ЖИЗНЕННОГО ЦИКЛА
     WidgetsBinding.instance.addObserver(this);
   }
 
-  // Метод для запроса разрешений и запуска сервиса
   Future<void> _requestLocationPermissionAndStart() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       await Geolocator.openLocationSettings();
       serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _showErrorAndReturn(
-          'Служба геолокации отключена. Приложение не сможет отслеживать ваш маршрут.',
-        );
+        _showErrorAndReturn('Служба геолокации отключена.');
         return;
       }
     }
-
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-
     if (permission == LocationPermission.deniedForever) {
-      _showErrorAndReturn(
-        'Разрешение на геолокацию отклонено навсегда. Пожалуйста, предоставьте его в настройках приложения.',
-      );
+      _showErrorAndReturn('Разрешение на геолокацию отклонено навсегда.');
       return;
     }
-
     if (permission != LocationPermission.always &&
         permission != LocationPermission.whileInUse) {
-      _showErrorAndReturn(
-        'Разрешение на геолокацию не предоставлено. Приложение не сможет отслеживать ваш маршрут.',
-      );
+      _showErrorAndReturn('Разрешение на геолокацию не предоставлено.');
       return;
     }
 
-    // Запрос разрешения на уведомления (для Android 13+)
     var notificationPermission = await Permission.notification.status;
     if (notificationPermission.isDenied) {
       notificationPermission = await Permission.notification.request();
       if (notificationPermission.isDenied) {
-        _showErrorAndReturn(
-          'Для работы фонового сервиса требуется разрешение на уведомления.',
-        );
+        _showErrorAndReturn('Требуется разрешение на уведомления.');
         return;
       }
     }
@@ -161,21 +146,15 @@ class _RunScreenState extends State<RunScreen>
     await initBackgroundService();
     bool started = await FlutterBackgroundService().startService();
     print('SERVICE STARTED = $started');
-
     if (started) {
       final isRunning = await FlutterBackgroundService().isRunning();
       print('SERVICE RUNNING = $isRunning');
-    } else {
-      print('FAILED TO START SERVICE');
     }
   }
 
   void _initBackgroundListener() {
-    _backgroundLocationSubscription = FlutterBackgroundService()
-        .on(
-          'locationUpdate',
-        ) // ❗️Теперь фоновый сервис вызывает это событие, когда сохраняет точку в Hive
-        .listen(_onBackgroundLocation);
+    _backgroundLocationSubscription =
+        FlutterBackgroundService().on('locationUpdate').listen(_onBackgroundLocation);
     print('Подписка на фоновое обновление местоположения установлена');
   }
 
@@ -190,12 +169,11 @@ class _RunScreenState extends State<RunScreen>
           _currentPosition = position;
           _smoothedPosition = latLng;
           _lastSmoothedPosition = latLng;
-          _mapController.move(latLng, 15);
-          // ✅ УСТАНОВИТЬ СОСТОЯНИЕ READY ПРИ ПОЛУЧЕНИИ ПОЗИЦИИ
           if (_state == RunState.searchingGps) {
             _state = RunState.ready;
           }
         });
+        _mapController.move(LatLng(position.latitude, position.longitude), 15);
       }
     } catch (e) {
       print('Не удалось получить текущую позицию: $e');
@@ -231,11 +209,7 @@ class _RunScreenState extends State<RunScreen>
       duration: const Duration(milliseconds: 500),
       vsync: this,
     );
-    _distanceAnimation = Tween<double>(
-      begin: 0,
-      end: 1,
-    ).animate(_distanceController);
-
+    _distanceAnimation = Tween<double>(begin: 0, end: 1).animate(_distanceController);
     _factController = AnimationController(
       duration: const Duration(milliseconds: 1000),
       vsync: this,
@@ -253,20 +227,15 @@ class _RunScreenState extends State<RunScreen>
     _factController.dispose();
     _tts.dispose();
     _audio.dispose();
-
-    // 👇 УДАЛИТЬ НАБЛЮДАТЕЛЬ
     WidgetsBinding.instance.removeObserver(this);
-
-    // ОСТАНОВИТЬ СЕРВИС ТОЛЬКО ПРИ УНИЧТОЖЕНИИ ВИДЖЕТА
     FlutterBackgroundService().invoke('stopService');
-
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _restoreRouteFromBackground(); // ✅ ИСПРАВЛЕНО: вызов метода с правильным именем
+      _restoreRouteFromBackground();
     }
   }
 
@@ -277,7 +246,6 @@ class _RunScreenState extends State<RunScreen>
     }
   }
 
-  // 👇 2️⃣ АНТИ-GPS СКАЧКИ (КРИТИЧНО)
   bool _isGpsJump(Position prev, Position next) {
     final d = Geolocator.distanceBetween(
       prev.latitude,
@@ -288,64 +256,41 @@ class _RunScreenState extends State<RunScreen>
     return d > _maxJumpMeters;
   }
 
-  // 👇 3️⃣ СГЛАЖИВАНИЕ ПОЗИЦИИ (LOW-PASS FILTER)
   LatLng _smoothPosition(LatLng raw) {
     if (_smoothedPosition == null) {
       _smoothedPosition = raw;
       return raw;
     }
-
-    const alpha = 0.15; // меньше — плавнее
-    final lat =
-        _smoothedPosition!.latitude +
-        alpha * (raw.latitude - _smoothedPosition!.latitude);
-    final lon =
-        _smoothedPosition!.longitude +
-        alpha * (raw.longitude - _smoothedPosition!.longitude);
-
+    const alpha = 0.15;
+    final lat = _smoothedPosition!.latitude + alpha * (raw.latitude - _smoothedPosition!.latitude);
+    final lon = _smoothedPosition!.longitude + alpha * (raw.longitude - _smoothedPosition!.longitude);
     _smoothedPosition = LatLng(lat, lon);
     return _smoothedPosition!;
   }
 
-  // 👇 4️⃣ СГЛАЖИВАНИЕ HEADING (ОЧЕНЬ ВАЖНО)
   double _smoothHeading(double raw) {
     const alpha = 0.2;
-
     double delta = raw - _smoothedHeading;
     if (delta > 180) delta -= 360;
     if (delta < -180) delta += 360;
-
     _smoothedHeading += alpha * delta;
     return _smoothedHeading;
   }
 
-  // 👇 5️⃣ LOOK-AHEAD (КАМЕРА СМОТРИТ ВПЕРЁД) - УМЕНЬШЕНО
   LatLng _lookAhead(LatLng pos, double speed) {
-    final distance = math.min(speed * 0.7, 8); // метров (было 1.5, 20)
+    final distance = math.min(speed * 0.7, 8);
     final rad = _smoothedHeading * math.pi / 180;
-
     final dLat = (distance / 111111) * math.cos(rad);
-    final dLon =
-        (distance / (111111 * math.cos(pos.latitude * math.pi / 180))) *
-        math.sin(rad);
-
+    final dLon = (distance / (111111 * math.cos(pos.latitude * math.pi / 180))) * math.sin(rad);
     return LatLng(pos.latitude + dLat, pos.longitude + dLon);
   }
 
-  // 👇 6️⃣ DEAD-RECKONING (МЕЖДУ GPS) - УБРАНО (теперь только при accuracy > 20)
-  // УДАЛЕНО: _predict(Position pos)
-
-  // 👇 7️⃣ ФИНАЛЬНЫЙ _onBackgroundLocation (теперь просто обновляет позицию, не маршрут)
   void _onBackgroundLocation(dynamic data) {
-    if (!mounted) return;
-    if (data['lat'] == null || data['lon'] == null) return;
-
+    if (!mounted || data['lat'] == null || data['lon'] == null) return;
     final position = Position(
       latitude: data['lat'],
       longitude: data['lon'],
-      timestamp: data['timestamp'] != null
-          ? DateTime.parse(data['timestamp'])
-          : DateTime.now(),
+      timestamp: data['timestamp'] != null ? DateTime.parse(data['timestamp']) : DateTime.now(),
       accuracy: 5,
       altitude: 0,
       heading: (data['heading'] as num?)?.toDouble() ?? _heading,
@@ -356,149 +301,85 @@ class _RunScreenState extends State<RunScreen>
     );
 
     if (_currentPosition != null && _isGpsJump(_currentPosition!, position)) {
-      print('IGNORING GPS JUMP'); // Лог для отладки
-      return; // ❌ игнорируем скачок
+      print('IGNORING GPS JUMP');
+      return;
     }
 
     _currentPosition = position;
-
     final rawHeading = position.heading;
     _smoothedHeading = _smoothHeading(rawHeading);
-
-    // ❌ УДАЛЕНО: final predicted = _predict(position);
     final rawPos = LatLng(position.latitude, position.longitude);
-    final smoothed = _smoothPosition(rawPos); // ❌ Без predicted
-
-    // ✅ СОХРАНЯЕМ СГЛАЖЕННУЮ ПОЗИЦИЮ ДЛЯ МАРКЕРА
+    final smoothed = _smoothPosition(rawPos);
     _lastSmoothedPosition = smoothed;
 
     setState(() {
       if (_state == RunState.searchingGps) {
         _state = RunState.ready;
-        _mapController.move(
-          smoothed,
-          15,
-        ); // ❗️ИСПРАВЛЕНО: используем сглаженную позицию
+        _mapController.move(smoothed, 15);
       }
-
       if (_state == RunState.running) {
-        // ✅ ДОБАВЛЕНО: добавляем точку в UI маршрут
-        _route.add(
-          RoutePoint(
-            lat: smoothed.latitude,
-            lon: smoothed.longitude,
-            timestamp: position.timestamp,
-            speed: position.speed,
-          ),
-        );
+        _route.add(RoutePoint(
+          lat: smoothed.latitude,
+          lon: smoothed.longitude,
+          timestamp: position.timestamp,
+          speed: position.speed,
+        ));
         _calculateDistance();
-        // ❗️ИСПРАВЛЕНО: передаём позицию в _checkProximity
-        _checkProximity(position);
+        _checkProximity(position); // 👈 ОСНОВНАЯ ЛОГИКА ФАКТОВ
       }
     });
-
     _moveCamera(smoothed);
   }
 
-  // 👇 8️⃣ ФИНАЛЬНЫЙ _moveCamera (БЕЗ ДЁРГАНИЙ, использует визуальные данные)
   void _moveCamera(LatLng pos) {
-    // 1️⃣ FOLLOW MODE
     if (!_followUser || _state != RunState.running) return;
-
     final now = DateTime.now();
-    if (_lastCameraUpdate != null &&
-        now.difference(_lastCameraUpdate!) < _cameraInterval)
-      return;
-
+    if (_lastCameraUpdate != null && now.difference(_lastCameraUpdate!) < _cameraInterval) return;
     final target = _lookAhead(pos, _currentPosition?.speed ?? 0);
-
-    // ❗️ИСПРАВЛЕНО: move, а не moveAndRotate
-    _mapController.move(
-      target,
-      _calculateZoom(),
-      // _smoothedHeading, // ❌ УДАЛЕН
-    );
-
+    _mapController.move(target, _calculateZoom());
     _lastCameraUpdate = now;
   }
 
-  // 👇 3️⃣ АДАПТИВНЫЙ ZOOM ПО СКОРОСТИ (из предыдущего патча)
   double _calculateZoom() {
     final speed = _currentPosition?.speed ?? 0;
-
-    if (speed < 1.5) return 17.5; // шаг
-    if (speed < 3.5) return 17.0; // медленный бег
-    if (speed < 5.5) return 16.5; // норм бег
-    if (speed < 7.5) return 16.0; // быстрый
-    return 15.5; // спринт
+    if (speed < 1.5) return 17.5;
+    if (speed < 3.5) return 17.0;
+    if (speed < 5.5) return 16.5;
+    if (speed < 7.5) return 16.0;
+    return 15.5;
   }
 
-  // ❗️НОВОЕ: метод восстановления маршрута из фона
   Future<void> _restoreRouteFromBackground() async {
     final restoredRoute = await RunRepository().getActiveRoute();
-
     if (!mounted || restoredRoute.isEmpty) return;
-
     setState(() {
-      _route = restoredRoute; // ✅ УСТАНАВЛИВАЕМ маршрут из Hive
+      _route = restoredRoute;
       _currentPosition = Position(
         latitude: restoredRoute.last.lat,
         longitude: restoredRoute.last.lon,
         timestamp: restoredRoute.last.timestamp ?? DateTime.now(),
         accuracy: 5,
         altitude: 0,
-        heading: _smoothedHeading, // Используем текущее сглаженное направление
+        heading: _smoothedHeading,
         speed: restoredRoute.last.speed,
         speedAccuracy: 0,
         altitudeAccuracy: 0,
         headingAccuracy: 0,
       );
-      // Также обновляем _lastSmoothedPosition для маркера
-      _lastSmoothedPosition = LatLng(
-        _currentPosition!.latitude,
-        _currentPosition!.longitude,
-      );
+      _lastSmoothedPosition = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
     });
-
     _mapController.move(
       LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
       _calculateZoom(),
     );
   }
 
-  void _showError(String message) {
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Геолокация'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('ОК'),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _calculateDistance() {
     if (_route.length < 2) return;
-
     double lastDistance = 0.0;
-    if (_route.length >= 2) {
-      final pos1 = _route[_route.length - 2];
-      final pos2 = _route[_route.length - 1];
-      lastDistance = Geolocator.distanceBetween(
-        pos1.lat,
-        pos1.lon,
-        pos2.lat,
-        pos2.lon,
-      );
-    }
-
+    final pos1 = _route[_route.length - 2];
+    final pos2 = _route[_route.length - 1];
+    lastDistance = Geolocator.distanceBetween(pos1.lat, pos1.lon, pos2.lat, pos2.lon);
     setState(() {
       _totalDistanceInMeters += lastDistance;
       _distance = _totalDistanceInMeters / 1000;
@@ -507,53 +388,31 @@ class _RunScreenState extends State<RunScreen>
     _distanceController.forward();
   }
 
-  // ❗️ИСПРАВЛЕНО: _checkProximity теперь принимает Position
-  void _checkProximity(Position position) {
-    // ❗️ИСПРАВЛЕНО: передаём позицию в factsService
+  // ✅ ОСНОВНАЯ ЛОГИКА ФАКТОВ И POI
+  void _checkProximity(Position position) async {
+    // 1. Проверяем динамические POI из OSM
+    final poi = _poiService.getUnannouncedPoi(position.latitude, position.longitude);
+    if (poi != null) {
+      final factText = _poiService.formatPoiFact(poi);
+      await _tts.speak(factText);
+      poi.announced = true;
+      await poi.save();
+      _lastFactTime = DateTime.now();
+      setState(() {
+        _factsCount++;
+        _shownPoiIds.add(poi.id);
+      });
+      return;
+    }
+
+    // 2. Если нет POI — делегируем FactsService (статические POI или общие факты)
     _factsService.checkProximityToPoi(position);
   }
 
-  // ❗️ИСПРАВЛЕНО: _startGeneralFacts с кэшированием и await, интеграцией FactsService
-  void _startGeneralFacts() {
-    _factsTimer?.cancel();
-    _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
-      // ❗️async
-      if (_state == RunState.running && _route.length > 5) {
-        final now = DateTime.now();
-        if (_lastFactTime == null ||
-            now.difference(_lastFactTime!) >= const Duration(minutes: 3)) {
-          _lastFactTime = now;
-
-          // ❗️ИСПРАВЛЕНО: дожидаемся и кэшируем индексы
-          final allSpokenIndices =
-              _cachedAllSpokenIndices ??
-              await RunRepository().getAllSpokenFactIndices();
-          _cachedAllSpokenIndices =
-              allSpokenIndices; // Кэшируем на время сессии
-
-          // ❗️ИСПРАВЛЕНО: получаем факт через FactsService
-          final factText = _factsService.getGeneralFact(allSpokenIndices);
-          if (factText != null) {
-            _tts.speak(factText);
-
-            setState(() {
-              _factsCount++;
-              // ❗️ИСПРАВЛЕНО: обновляем список показанных фактов из сервиса
-              _spokenFactIndices.addAll(_factsService.getSpokenIndices());
-            });
-          }
-        }
-      }
-    });
-  }
-
-  // 👇 ДОБАВЬ ЭТОТ МЕТОД В КЛАСС _RunScreenState
   Widget _buildAudioGuideWidget() {
-    // Определяем статус гида
     String status;
     Color statusColor;
     IconData statusIcon;
-
     if (_tts.isSpeaking) {
       status = "Рассказываю...";
       statusColor = Colors.yellow;
@@ -567,7 +426,6 @@ class _RunScreenState extends State<RunScreen>
       statusColor = Colors.green;
       statusIcon = Icons.record_voice_over;
     }
-
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       margin: const EdgeInsets.symmetric(horizontal: 20),
@@ -622,7 +480,6 @@ class _RunScreenState extends State<RunScreen>
               ],
             ),
           ),
-          // Кнопка паузы/продолжения
           GestureDetector(
             onTap: () {
               if (_tts.isPaused) {
@@ -645,7 +502,6 @@ class _RunScreenState extends State<RunScreen>
             ),
           ),
           const SizedBox(width: 8),
-          // Кнопка пропуска
           GestureDetector(
             onTap: () {
               _tts.stop();
@@ -668,38 +524,37 @@ class _RunScreenState extends State<RunScreen>
     );
   }
 
-  // 👇 ОБНОВЛЁННЫЙ МЕТОД _buildStatItem
   Widget _buildStatItem({
     required IconData icon,
     required String value,
     required String label,
     required Color color,
-    double fontSize = 18, // 👈 ПАРАМЕТР ДЛЯ РАЗМЕРА ШРИФТА
+    double fontSize = 18,
   }) {
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.all(8), // 👈 ВМЕСТО 10
+          padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
             color: color.withOpacity(0.15),
             shape: BoxShape.circle,
           ),
-          child: Icon(icon, color: color, size: 20), // 👈 ВМЕСТО 22
+          child: Icon(icon, color: color, size: 20),
         ),
-        const SizedBox(height: 6), // 👈 ВМЕСТО 8
+        const SizedBox(height: 6),
         Text(
           value,
           style: TextStyle(
-            fontSize: fontSize, // 👈 ИСПОЛЬЗУЕМ ПАРАМЕТР
+            fontSize: fontSize,
             fontWeight: FontWeight.w700,
             color: Colors.white,
           ),
         ),
-        const SizedBox(height: 2), // 👈 ВМЕСТО 4
+        const SizedBox(height: 2),
         Text(
           label,
           style: TextStyle(
-            fontSize: 11, // 👈 ВМЕСТО 12
+            fontSize: 11,
             fontWeight: FontWeight.w500,
             color: Colors.white.withOpacity(0.7),
           ),
@@ -717,14 +572,13 @@ class _RunScreenState extends State<RunScreen>
       _state = RunState.countdown;
       _countdown = 3;
     });
-
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_countdown > 0) {
         setState(() {
           _countdown--;
         });
       } else {
-        _countdownTimer?.cancel();
+        timer.cancel();
         _startRun();
       }
     });
@@ -734,96 +588,84 @@ class _RunScreenState extends State<RunScreen>
     if (mounted) {
       setState(() {
         _state = RunState.running;
-        _followUser = true; // 1️⃣ FOLLOW MODE
+        _followUser = true;
         _runStartTime = DateTime.now();
-        _route = []; // Сбрасываем UI маршрут
+        _route = [];
         _factsCount = 0;
         _distance = 0.0;
         _totalDistanceInMeters = 0.0;
         _lastFactTime = null;
         _lastFactIndices.clear();
         _lastCameraUpdate = null;
-        _lastValidGpsTime = null; // Сброс при старте
-        _smoothedPosition = null; // Сброс сглаженной позиции
-        _smoothedHeading = 0.0; // Сброс сглаженного направления
+        _lastValidGpsTime = null;
+        _smoothedPosition = null;
+        _smoothedHeading = 0.0;
         _elapsedRunTime = Duration.zero;
-
-        // 👇 5️⃣ ОЧИСТКА СЕССИОННОГО СОСТОЯНИЯ FactsService
         _factsService.clearSessionState();
-
+        _poiService.resetAnnouncedFlags(); // 👈 СБРОС POI
         if (_currentPosition != null) {
-          _startPoint = LatLng(
-            _currentPosition!.latitude,
-            _currentPosition!.longitude,
-          );
+          _startPoint = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
         }
       });
-    }
 
-    // ✅ ОЧИСТИТЬ АКТИВНЫЙ МАРШРУТ ПРИ СТАРТЕ
-    await RunRepository().clearActiveRoute();
-
-    _runTicker?.cancel();
-    _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _state == RunState.running) {
-        setState(() {
-          _elapsedRunTime += const Duration(seconds: 1);
-        });
+      // Загрузка POI по bbox
+      if (_currentPosition != null) {
+        final lat = _currentPosition!.latitude;
+        final lon = _currentPosition!.longitude;
+        final delta = 0.018; // ~2 км
+        await _poiService.loadPoiForBbox(lat - delta, lat + delta, lon - delta, lon + delta);
       }
-    });
 
-    _audio.playMusic(_musicMode);
-    _startGeneralFacts(); // Теперь вызывает исправленную версию
-
-    _speakButtonAction("Тренировка началась");
+      await RunRepository().clearActiveRoute();
+      _runTicker?.cancel();
+      _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && _state == RunState.running) {
+          setState(() {
+            _elapsedRunTime += const Duration(seconds: 1);
+          });
+        }
+      });
+      _audio.playMusic(_musicMode);
+      _startGeneralFacts();
+      _speakButtonAction("Тренировка началась");
+    }
   }
 
   void _stopRun() {
-    _followUser = false; // 1️⃣ FOLLOW MODE
-
-    // FlutterBackgroundService().invoke('stopService'); // УДАЛЕНО - НЕ ОСТАНАВЛИВАЕМ СЕРВИС
+    _followUser = false;
     _runTicker?.cancel();
-
     if (mounted) {
       setState(() {
         _state = RunState.finished;
       });
     }
-
     _audio.stopMusic();
     _factsTimer?.cancel();
     _saveRunSession();
-
     _speakButtonAction("Тренировка окончена");
-
     Future.delayed(const Duration(milliseconds: 300), () {
       if (mounted && _currentSession != null) {
         Navigator.push(
           context,
-          MaterialPageRoute(
-            builder: (context) =>
-                SessionDetailScreen(session: _currentSession!),
-          ),
+          MaterialPageRoute(builder: (context) => SessionDetailScreen(session: _currentSession!)),
         );
       }
     });
   }
 
   void _pauseRun() {
-    _followUser = false; // 1️⃣ FOLLOW MODE
+    _followUser = false;
     _runTicker?.cancel();
-
     if (mounted) {
       setState(() {
         _state = RunState.paused;
       });
     }
-
     _speakButtonAction("Тренировка на паузе");
   }
 
   void _resumeRun() {
-    _followUser = true; // 1️⃣ FOLLOW MODE
+    _followUser = true;
     _runTicker?.cancel();
     _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _state == RunState.running) {
@@ -832,13 +674,11 @@ class _RunScreenState extends State<RunScreen>
         });
       }
     });
-
     if (mounted) {
       setState(() {
         _state = RunState.running;
       });
     }
-
     _speakButtonAction("Тренировка продолжается");
   }
 
@@ -849,41 +689,31 @@ class _RunScreenState extends State<RunScreen>
       distance: _distance,
       duration: _elapsedRunTime.inSeconds,
       factsCount: _factsCount,
-      route: _route, // Теперь _route - это восстановленный маршрут
-      // 👇 5️⃣ СОХРАНЕНИЕ показанных индексов и POI
+      route: _route,
       spokenFactIndices: _spokenFactIndices.toList(),
       shownPoiIds: _shownPoiIds.toList(),
     );
-
     _currentSession = session;
-
     await RunRepository().saveSession(session);
-
     if (mounted) {
       setState(() {
         _history.add(session);
       });
     }
-
-    print(
-      "💾 Сессия сохранена: $_distance км, $_factsCount фактов, ${_spokenFactIndices.length} индексов, ${_shownPoiIds.length} POI",
-    );
+    print("💾 Сессия сохранена: $_distance км, $_factsCount фактов, ${_spokenFactIndices.length} индексов, ${_shownPoiIds.length} POI");
   }
 
   String get _currentPace {
     if (_distance <= 0) return '--';
-
     final secondsPerKm = _elapsedRunTime.inSeconds / _distance;
     final minutes = (secondsPerKm / 60).floor();
     final seconds = (secondsPerKm % 60).round();
-
     return '$minutes:${seconds.toString().padLeft(2, "0")}';
   }
 
   double _calculateCalories() {
     const double weightKg = 75;
     const double metRunning = 9.8;
-
     final hours = _elapsedRunTime.inSeconds / 3600;
     return metRunning * weightKg * hours;
   }
@@ -891,11 +721,9 @@ class _RunScreenState extends State<RunScreen>
   List<Polyline> _buildSpeedPolylines() {
     final polylines = <Polyline>[];
     final smoothedRoute = _smoothRoute(_route, 5);
-
     for (int i = 1; i < smoothedRoute.length; i++) {
       final p1 = smoothedRoute[i - 1];
       final p2 = smoothedRoute[i];
-
       Color color;
       if (p1.speed < 2) {
         color = Colors.blue;
@@ -904,30 +732,23 @@ class _RunScreenState extends State<RunScreen>
       } else {
         color = Colors.red;
       }
-
-      polylines.add(
-        Polyline(
-          points: [LatLng(p1.lat, p1.lon), LatLng(p2.lat, p2.lon)],
-          strokeWidth: 5,
-          color: color,
-        ),
-      );
+      polylines.add(Polyline(
+        points: [LatLng(p1.lat, p1.lon), LatLng(p2.lat, p2.lon)],
+        strokeWidth: 5,
+        color: color,
+      ));
     }
-
     return polylines;
   }
 
   List<RoutePoint> _smoothRoute(List<RoutePoint> route, int windowSize) {
     if (route.length < windowSize) return route;
-
     final smoothed = <RoutePoint>[];
     final halfWindow = windowSize ~/ 2;
-
     for (int i = 0; i < route.length; i++) {
       double latSum = 0;
       double lonSum = 0;
       int count = 0;
-
       for (int j = -halfWindow; j <= halfWindow; j++) {
         final idx = i + j;
         if (idx >= 0 && idx < route.length) {
@@ -936,22 +757,41 @@ class _RunScreenState extends State<RunScreen>
           count++;
         }
       }
-
-      smoothed.add(
-        RoutePoint(
-          lat: latSum / count,
-          lon: lonSum / count,
-          timestamp: route[i].timestamp,
-          speed: route[i].speed,
-        ),
-      );
+      smoothed.add(RoutePoint(
+        lat: latSum / count,
+        lon: lonSum / count,
+        timestamp: route[i].timestamp,
+        speed: route[i].speed,
+      ));
     }
-
     return smoothed;
   }
 
   Duration _getCurrentRunTime() {
     return _elapsedRunTime;
+  }
+
+  void _startGeneralFacts() {
+    _factsTimer?.cancel();
+    _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
+      if (_state == RunState.running && _route.length > 5) {
+        final now = DateTime.now();
+        if (_lastFactTime == null || now.difference(_lastFactTime!) >= const Duration(minutes: 3)) {
+          _lastFactTime = now;
+          final allSpokenIndices = _cachedAllSpokenIndices ??
+              await RunRepository().getAllSpokenFactIndices();
+          _cachedAllSpokenIndices = allSpokenIndices;
+          final factText = _factsService.getGeneralFact(allSpokenIndices);
+          if (factText != null) {
+            _tts.speak(factText);
+            setState(() {
+              _factsCount++;
+              _spokenFactIndices.addAll(_factsService.getSpokenIndices());
+            });
+          }
+        }
+      }
+    });
   }
 
   @override
@@ -966,15 +806,11 @@ class _RunScreenState extends State<RunScreen>
         actions: [
           IconButton(
             icon: Icon(
-              _musicMode == MusicMode.app
-                  ? Icons.music_note
-                  : Icons.library_music,
+              _musicMode == MusicMode.app ? Icons.music_note : Icons.library_music,
             ),
             onPressed: () {
               setState(() {
-                _musicMode = _musicMode == MusicMode.app
-                    ? MusicMode.external
-                    : MusicMode.app;
+                _musicMode = _musicMode == MusicMode.app ? MusicMode.external : MusicMode.app;
               });
               _audio.playMusic(_musicMode);
             },
@@ -984,9 +820,7 @@ class _RunScreenState extends State<RunScreen>
               if (choice == 'history') {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(
-                    builder: (context) => const HistoryScreen(),
-                  ),
+                  MaterialPageRoute(builder: (context) => const HistoryScreen()),
                 );
               }
             },
@@ -1006,55 +840,33 @@ class _RunScreenState extends State<RunScreen>
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
-              // ❌ 9️⃣ MapOptions (ПРОВЕРЬ) - rotation УДАЛЕН
               initialCenter: _currentPosition != null
-                  ? LatLng(
-                      _currentPosition!.latitude,
-                      _currentPosition!.longitude,
-                    )
+                  ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
                   : const LatLng(47.2313, 39.7233),
-              initialZoom: 16, // Изменён на 16
-              // rotation: _smoothedHeading, // ❌ УДАЛЕН из MapOptions
-              // interactionOptions: const InteractionOptions(
-              //   flags: InteractiveFlag.all & ~InteractiveFlag.rotate, // ❌ УДАЛЕН из MapOptions
-              // ),
+              initialZoom: 16,
             ),
             children: [
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName:
-                    'com.yourdomain.running_historian', // ❗️ИСПРАВЛЕНО: уникальное имя пакета
+                userAgentPackageName: 'com.example.running_historian',
               ),
-              if ((_state == RunState.running || _state == RunState.finished) &&
-                  _route.isNotEmpty)
+              if ((_state == RunState.running || _state == RunState.finished) && _route.isNotEmpty)
                 PolylineLayer(polylines: [..._buildSpeedPolylines()]),
-              if (_lastSmoothedPosition !=
-                  null) // ✅ ИСПРАВЛЕНО: маркер = сглаженная позиция
+              if (_lastSmoothedPosition != null)
                 MarkerLayer(
                   markers: [
                     Marker(
-                      point:
-                          _lastSmoothedPosition!, // ✅ ИСПРАВЛЕНО: маркер = сглаженная позиция
+                      point: _lastSmoothedPosition!,
                       width: 50,
                       height: 50,
                       child: Transform.rotate(
-                        // ✅ ИСПРАВЛЕНО: маркер ВРАЩАЕТСЯ
-                        angle:
-                            _smoothedHeading *
-                            math.pi /
-                            180, // ❗️ИСПРАВЛЕНО: угол = сглаженное направление
-                        child: const Icon(
-                          Icons.navigation,
-                          color: Colors.deepPurple,
-                          size: 28,
-                        ),
+                        angle: _smoothedHeading * math.pi / 180,
+                        child: const Icon(Icons.navigation, color: Colors.deepPurple, size: 28),
                       ),
                     ),
                   ],
                 ),
-              if (_state != RunState.init &&
-                  _startPoint != null &&
-                  _state != RunState.searchingGps)
+              if (_state != RunState.init && _startPoint != null && _state != RunState.searchingGps)
                 MarkerLayer(
                   markers: [
                     Marker(
@@ -1067,11 +879,7 @@ class _RunScreenState extends State<RunScreen>
                           shape: BoxShape.circle,
                           border: Border.all(color: Colors.white, width: 2),
                         ),
-                        child: const Icon(
-                          Icons.flag,
-                          color: Colors.white,
-                          size: 24,
-                        ),
+                        child: const Icon(Icons.flag, color: Colors.white, size: 24),
                       ),
                     ),
                   ],
@@ -1089,11 +897,7 @@ class _RunScreenState extends State<RunScreen>
                           shape: BoxShape.circle,
                           border: Border.all(color: Colors.white, width: 2),
                         ),
-                        child: const Icon(
-                          Icons.fiber_manual_record,
-                          color: Colors.white,
-                          size: 16,
-                        ),
+                        child: const Icon(Icons.fiber_manual_record, color: Colors.white, size: 16),
                       ),
                     ),
                   ],
@@ -1110,36 +914,27 @@ class _RunScreenState extends State<RunScreen>
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 2),
                       ),
-                      child: const Icon(
-                        Icons.location_pin,
-                        color: Colors.white,
-                        size: 24,
-                      ),
+                      child: const Icon(Icons.location_pin, color: Colors.white, size: 24),
                     ),
                   );
                 }).toList(),
               ),
             ],
           ),
-          // 👇 ОБНОВЛЁННЫЙ БЛОК СТАТИСТИКИ И АУДИО-ГИДА
           if (_state == RunState.running || _state == RunState.paused)
             Positioned(
-              top: 12, // 👈 ВМЕСТО 40 (ближе к верху)
-              left: 12, // 👈 ВМЕСТО 20 (уменьшили отступы)
+              top: 12,
+              left: 12,
               right: 12,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // 1. СТАТИСТИКА (немного уменьшаем отступы)
                   Container(
-                    padding: const EdgeInsets.all(16), // 👈 ВМЕСТО 20
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.85), // 👈 Чуть темнее
-                      borderRadius: BorderRadius.circular(20), // 👈 ВМЕСТО 25
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.15),
-                        width: 1,
-                      ),
+                      color: Colors.black.withOpacity(0.85),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white.withOpacity(0.15), width: 1),
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withOpacity(0.6),
@@ -1150,7 +945,6 @@ class _RunScreenState extends State<RunScreen>
                     ),
                     child: Column(
                       children: [
-                        // Дистанция
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -1161,7 +955,7 @@ class _RunScreenState extends State<RunScreen>
                               child: Text(
                                 _distance.toStringAsFixed(2),
                                 style: const TextStyle(
-                                  fontSize: 36, // 👈 ВМЕСТО 42
+                                  fontSize: 36,
                                   fontWeight: FontWeight.w800,
                                   color: Colors.white,
                                   letterSpacing: -1,
@@ -1172,15 +966,14 @@ class _RunScreenState extends State<RunScreen>
                             const Text(
                               'км',
                               style: TextStyle(
-                                fontSize: 16, // 👈 ВМЕСТО 18
+                                fontSize: 16,
                                 fontWeight: FontWeight.w600,
                                 color: Colors.white70,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 16), // 👈 ВМЕСТО 20
-                        // Время, темп, калории
+                        const SizedBox(height: 16),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -1190,7 +983,7 @@ class _RunScreenState extends State<RunScreen>
                                   '${currentRunTime.inMinutes.remainder(60).toString().padLeft(2, '0')}:${(currentRunTime.inSeconds.remainder(60)).toString().padLeft(2, '0')}',
                               label: 'Время',
                               color: Colors.blue.shade300,
-                              fontSize: 18, // 👈 ДОБАВЛЕНО
+                              fontSize: 18,
                             ),
                             _buildStatItem(
                               icon: Icons.speed_rounded,
@@ -1211,13 +1004,11 @@ class _RunScreenState extends State<RunScreen>
                       ],
                     ),
                   ),
-
-                  // 2. АУДИО-ГИД (под статистикой)
                   if (_state != RunState.init &&
                       _state != RunState.searchingGps &&
                       _state != RunState.countdown)
                     Padding(
-                      padding: const EdgeInsets.only(top: 8), // 👈 ВМЕСТО 12
+                      padding: const EdgeInsets.only(top: 8),
                       child: _buildAudioGuideWidget(),
                     ),
                 ],
@@ -1308,10 +1099,7 @@ class _RunScreenState extends State<RunScreen>
                       const SizedBox(height: 20),
                       Text(
                         _countdown > 0 ? 'Подготовьтесь!' : 'Бегите!',
-                        style: const TextStyle(
-                          fontSize: 20,
-                          color: Colors.white,
-                        ),
+                        style: const TextStyle(fontSize: 20, color: Colors.white),
                       ),
                     ],
                   ),
@@ -1332,9 +1120,7 @@ class _RunScreenState extends State<RunScreen>
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
                       minimumSize: const Size(150, 60),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     child: const Text('Start', style: TextStyle(fontSize: 20)),
                   ),
@@ -1345,9 +1131,7 @@ class _RunScreenState extends State<RunScreen>
                       backgroundColor: Colors.orange,
                       foregroundColor: Colors.white,
                       minimumSize: const Size(150, 60),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     child: const Text('Pause', style: TextStyle(fontSize: 20)),
                   ),
@@ -1361,14 +1145,9 @@ class _RunScreenState extends State<RunScreen>
                           backgroundColor: Colors.green,
                           foregroundColor: Colors.white,
                           minimumSize: const Size(120, 60),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        child: const Text(
-                          'Resume',
-                          style: TextStyle(fontSize: 18),
-                        ),
+                        child: const Text('Resume', style: TextStyle(fontSize: 18)),
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton(
@@ -1377,14 +1156,9 @@ class _RunScreenState extends State<RunScreen>
                           backgroundColor: Colors.red,
                           foregroundColor: Colors.white,
                           minimumSize: const Size(120, 60),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        child: const Text(
-                          'Stop',
-                          style: TextStyle(fontSize: 18),
-                        ),
+                        child: const Text('Stop', style: TextStyle(fontSize: 18)),
                       ),
                     ],
                   ),
@@ -1393,9 +1167,8 @@ class _RunScreenState extends State<RunScreen>
                     onPressed: () {
                       setState(() {
                         _state = RunState.searchingGps;
-                        _followUser =
-                            true; // Сбрасываем follow при новой тренировке
-                        _route.clear(); // Очищаем UI маршрут
+                        _followUser = true;
+                        _route.clear();
                         _startPoint = null;
                         _distance = 0.0;
                         _totalDistanceInMeters = 0.0;
@@ -1404,26 +1177,21 @@ class _RunScreenState extends State<RunScreen>
                         _lastFactTime = null;
                         _lastFactIndices.clear();
                         _lastCameraUpdate = null;
-                        _lastValidGpsTime = null; // Сброс при новой тренировке
-                        _smoothedPosition = null; // Сброс сглаженной позиции
-                        _smoothedHeading = 0.0; // Сброс сглаженного направления
-                        _cachedAllSpokenIndices = null; // Сброс кэша индексов
-                        // 👇 5️⃣ ОЧИСТКА СЕССИОННОГО СОСТОЯНИЯ FactsService (на всякий случай)
+                        _lastValidGpsTime = null;
+                        _smoothedPosition = null;
+                        _smoothedHeading = 0.0;
+                        _cachedAllSpokenIndices = null;
                         _factsService.clearSessionState();
+                        _poiService.resetAnnouncedFlags();
                       });
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue,
                       foregroundColor: Colors.white,
                       minimumSize: const Size(200, 60),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
-                    child: const Text(
-                      'Новая тренировка',
-                      style: TextStyle(fontSize: 20),
-                    ),
+                    child: const Text('Новая тренировка', style: TextStyle(fontSize: 20)),
                   ),
               ],
             ),

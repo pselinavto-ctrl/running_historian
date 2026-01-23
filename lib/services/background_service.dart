@@ -15,10 +15,10 @@ Future<void> initBackgroundService() async {
       onStart: onStart,
       autoStart: true,
       isForegroundMode: true,
+      // 👇 ОБЯЗАТЕЛЬНО: канал и текст
       notificationChannelId: 'running_historian_channel',
       initialNotificationTitle: 'Running Historian',
       initialNotificationContent: 'Тренировка активна',
-      // ❌ УДАЛЕНО: foregroundServiceType — не поддерживается в этой версии
     ),
     iosConfiguration: IosConfiguration(
       onForeground: onStart,
@@ -29,10 +29,12 @@ Future<void> initBackgroundService() async {
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
+  // Подписка на остановку
   service.on('stopService').listen((_) {
     service.stopSelf();
   });
 
+  // Инициализация Hive в фоне
   try {
     final dir = await getApplicationDocumentsDirectory();
     Hive.init(dir.path);
@@ -45,7 +47,7 @@ void onStart(ServiceInstance service) async {
 
     _startLocationUpdates(service);
   } catch (e, stack) {
-    print('Ошибка инициализации фона: $e\n$stack');
+    print('Ошибка фона: $e\n$stack');
   }
 }
 
