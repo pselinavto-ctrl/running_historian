@@ -19,7 +19,7 @@ import 'package:running_historian/services/background_service.dart';
 import 'package:running_historian/services/facts_service.dart';
 import 'package:running_historian/ui/screens/session_detail_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:running_historian/services/poi_service.dart'; // 👈 ДОБАВЛЕНО
+import 'package:running_historian/services/poi_service.dart'; // 👈 ДОБАВЛЕН ИМПОРТ
 
 // Стейт-машина
 enum RunState {
@@ -325,7 +325,7 @@ class _RunScreenState extends State<RunScreen>
           speed: position.speed,
         ));
         _calculateDistance();
-        _checkProximity(position); // 👈 ОСНОВНАЯ ЛОГИКА ФАКТОВ
+        _checkProximity(position);
       }
     });
     _moveCamera(smoothed);
@@ -405,7 +405,7 @@ class _RunScreenState extends State<RunScreen>
       return;
     }
 
-    // 2. Если нет POI — делегируем FactsService (статические POI или общие факты)
+    // 2. Если нет — делегируем FactsService (статические POI или общие факты)
     _factsService.checkProximityToPoi(position);
   }
 
