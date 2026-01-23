@@ -1,3 +1,4 @@
+// lib/services/cached_tile_provider.dart
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -6,15 +7,20 @@ import 'package:running_historian/services/map_tile_cache_service.dart';
 /// Создает виджет тайла с кэшированием
 Widget buildCachedTile(
   TileCoordinates coordinates,
-  TileLayer options,
+  TileLayerOptions options, // ❗️ИСПРАВЛЕНО: используем TileLayerOptions
   MapTileCacheService cacheService,
 ) {
+  // Безопасное получение URL шаблона
+  final urlTemplate =
+      options.urlTemplate ??
+      'https://tile.openstreetmap.org/{z}/{x}/{y}.png'; // ❗️ИСПРАВЛЕНО: безопасное обращение к urlTemplate
+
   return FutureBuilder<Uint8List?>(
     future: cacheService.getTile(
       coordinates.z.round(),
       coordinates.x.round(),
       coordinates.y.round(),
-      options.urlTemplate,
+      urlTemplate,
     ),
     builder: (context, snapshot) {
       if (snapshot.hasData && snapshot.data != null) {

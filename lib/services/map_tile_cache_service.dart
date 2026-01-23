@@ -1,6 +1,7 @@
+// lib/services/map_tile_cache_service.dart
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:math' as math;
+import 'dart:math' as math; // ❗️ДОБАВЛЕНО: импорт dart:math
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:http/http.dart' as http;
@@ -86,10 +87,14 @@ class MapTileCacheService {
   /// [center] - центр области
   /// [radiusKm] - радиус в километрах (по умолчанию 15 км = квадрат 30x30)
   /// [zoomLevels] - уровни зума для загрузки
+  /// [urlTemplate] - шаблон URL тайла
+  /// [provider] - идентификатор провайдера (например, 'osm')
   Future<void> preloadArea(
     LatLng center, {
     double radiusKm = 15.0,
     List<int> zoomLevels = const [13, 14, 15, 16],
+    required String urlTemplate, // ❗️ОБЯЗАТЕЛЬНЫЙ ПАРАМЕТР
+    required String provider,    // ❗️ОБЯЗАТЕЛЬНЫЙ ПАРАМЕТР
   }) async {
     if (_cacheDir == null) await init();
 
@@ -124,7 +129,10 @@ class MapTileCacheService {
           }
 
           // Загружаем тайл
-          final url = 'https://tile.openstreetmap.org/$z/$x/$y.png';
+          final url = urlTemplate // ❗️ИСПОЛЬЗУЕМ ПЕРЕДАННЫЙ urlTemplate
+              .replaceAll('{z}', z.toString())
+              .replaceAll('{x}', x.toString())
+              .replaceAll('{y}', y.toString());
           try {
             final response = await http.get(
               Uri.parse(url),
@@ -212,6 +220,7 @@ class MapTileCacheService {
 
   /// Конвертация широты в номер тайла Y
   int _latToTileY(double lat, int z) {
+    // ❗️ИСПОЛЬЗУЕМ math.log и math.tan
     final latRad = lat * math.pi / 180.0;
     return ((1.0 - (0.5 * (math.log((1 + math.sin(latRad)) / (1 - math.sin(latRad))) / math.pi))) * (1 << z)).floor();
   }

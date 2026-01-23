@@ -5,7 +5,6 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   flutter_tts
   geolocator_windows
-  objectbox_flutter_libs
   permission_handler_windows
 )
 
