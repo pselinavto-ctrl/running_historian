@@ -985,7 +985,7 @@ class _RunScreenState extends State<RunScreen>
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => HistoryScreen(history: _history),
+                    builder: (context) => const HistoryScreen(),
                   ),
                 );
               }

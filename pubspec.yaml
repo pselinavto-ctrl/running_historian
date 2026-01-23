@@ -15,36 +15,25 @@ dependencies:
   latlong2: ^0.9.1
   geolocator: ^11.1.0
   shared_preferences: ^2.2.2
-  # ❌ УБРАНО: flutter_map_tile_caching: ^10.1.1 # Не используем внешний пакет
-
   just_audio: ^0.9.46
   flutter_tts: ^4.2.3
-
-  path_provider: ^2.0.15 # ✅ ОДИН РАЗ
+  path_provider: ^2.1.5  # ✅ На правильном уровне
   path: ^1.8.2
   http: ^1.2.0
-
   hive: ^2.2.3
   hive_flutter: ^1.1.0
-
   flutter_background_service: ^5.0.5
   flutter_background_service_android: ^6.0.3
-
   permission_handler: ^11.0.1
   app_settings: ^5.1.1
-  
-  # 👇 ИСПРАВЛЕНО: используем существующую версию 4.x
-  flutter_animate: ^4.5.2 # Стабильная версия для синтаксиса 4.x
+  flutter_animate: ^4.5.2
   smooth_page_indicator: ^1.0.1
-
-  # ❗️ДОБАВЛЕНО: зависимости для кэша
   crypto: ^3.0.3
   collection: ^1.18.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-
   flutter_lints: ^2.0.0
   build_runner: ^2.4.7
   hive_generator: ^2.0.1
@@ -53,4 +42,3 @@ flutter:
   uses-material-design: true
   assets:
     - assets/music.mp3
-    # - assets/images/  # 👈 ДОБАВЛЕНО ДЛЯ ИЗОБРАЖЕНИЙ В ИСТОРИИ (по необходимости)

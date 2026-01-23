@@ -1,14 +1,40 @@
+// lib/ui/screens/history_screen.dart
+
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:running_historian/domain/run_session.dart';
+import 'package:running_historian/storage/run_repository.dart';
 import 'package:running_historian/ui/screens/session_detail_screen.dart';
 
-class HistoryScreen extends StatelessWidget {
-  final List<RunSession> history;
+class HistoryScreen extends StatefulWidget {
+  const HistoryScreen({super.key});
 
-  const HistoryScreen({super.key, required this.history});
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  late Future<List<RunSession>> _historyFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshHistory();
+  }
+
+  void _refreshHistory() {
+    setState(() {
+      _historyFuture = RunRepository().getHistory();
+    });
+  }
+
+  List<RunSession> _sortedHistory(List<RunSession> history) {
+    final sorted = List<RunSession>.from(history);
+    sorted.sort((a, b) => b.date.compareTo(a.date));
+    return sorted;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -19,19 +45,32 @@ class HistoryScreen extends StatelessWidget {
         centerTitle: true,
         elevation: 0,
       ),
-      body: history.isEmpty
-          ? _buildEmptyState()
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: history.length,
-              itemBuilder: (context, index) {
-                final session = history[index];
-                // ПРОСТАЯ АНИМАЦИЯ БЕЗ СЛОЖНОЙ ЦЕПОЧКИ
-                return _buildSessionCard(session, context)
-                    .animate()
-                    .fadeIn(duration: 300.ms, delay: (100 * index).ms);
-              },
-            ),
+      body: FutureBuilder<List<RunSession>>(
+        future: _historyFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(child: Text('Ошибка: ${snapshot.error}'));
+          }
+          final history = snapshot.data ?? [];
+          final displayHistory = _sortedHistory(history);
+
+          return displayHistory.isEmpty
+              ? _buildEmptyState()
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: displayHistory.length,
+                  itemBuilder: (context, index) {
+                    final session = displayHistory[index];
+                    return _buildSessionCard(session, context)
+                        .animate()
+                        .fadeIn(duration: 300.ms, delay: (100 * index).ms);
+                  },
+                );
+        },
+      ),
     );
   }
 
@@ -92,13 +131,16 @@ class HistoryScreen extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () {
-          Navigator.push(
+        onTap: () async {
+          final result = await Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) => SessionDetailScreen(session: session),
             ),
           );
+          if (result == true) {
+            _refreshHistory();
+          }
         },
         borderRadius: BorderRadius.circular(20),
         splashColor: Colors.deepPurple.withOpacity(0.1),
@@ -180,13 +222,8 @@ class HistoryScreen extends StatelessWidget {
                     borderRadius: BorderRadius.circular(12),
                     child: FlutterMap(
                       options: MapOptions(
-                        interactionOptions: const InteractionOptions(
-                          flags: InteractiveFlag.none,
-                        ),
-                        initialCenter: LatLng(
-                          session.route.first.lat,
-                          session.route.first.lon,
-                        ),
+                        interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
+                        initialCenter: LatLng(session.route.first.lat, session.route.first.lon),
                         initialZoom: 13.5,
                       ),
                       children: [
@@ -197,9 +234,7 @@ class HistoryScreen extends StatelessWidget {
                         PolylineLayer(
                           polylines: [
                             Polyline(
-                              points: session.route
-                                  .map((p) => LatLng(p.lat, p.lon))
-                                  .toList(),
+                              points: session.route.map((p) => LatLng(p.lat, p.lon)).toList(),
                               color: Colors.deepPurple.withOpacity(0.7),
                               strokeWidth: 3,
                             ),
@@ -238,14 +273,10 @@ class HistoryScreen extends StatelessWidget {
                       children: [
                         Text(
                           'Подробнее',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.deepPurple,
-                          ),
+                          style: TextStyle(fontSize: 12, color: Colors.deepPurple),
                         ),
                         SizedBox(width: 4),
-                        Icon(Icons.arrow_forward_ios_rounded,
-                            size: 10, color: Colors.deepPurple),
+                        Icon(Icons.arrow_forward_ios_rounded, size: 10, color: Colors.deepPurple),
                       ],
                     ),
                   ),
@@ -287,10 +318,7 @@ class HistoryScreen extends StatelessWidget {
         const SizedBox(height: 2),
         Text(
           label,
-          style: const TextStyle(
-            fontSize: 12,
-            color: Colors.grey,
-          ),
+          style: const TextStyle(fontSize: 12, color: Colors.grey),
         ),
       ],
     );

@@ -1,7 +1,8 @@
 // lib/ui/screens/welcome_screen.dart
+
 import 'package:flutter/material.dart';
-import 'package:running_historian/ui/screens/run_screen.dart'; // 👈 ДОБАВЬ ЭТОТ ИМПОРТ
-import 'package:running_historian/ui/screens/history_screen.dart'; // 👈 ДОБАВЬ ЭТОТ ИМПОРТ
+import 'package:running_historian/ui/screens/run_screen.dart';
+import 'package:running_historian/ui/screens/history_screen.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -22,7 +23,6 @@ class WelcomeScreen extends StatelessWidget {
         ),
         child: Stack(
           children: [
-            // Тут может быть сгенерированное изображение (пока заглушка)
             Center(
               child: Opacity(
                 opacity: 0.1,
@@ -73,7 +73,7 @@ class WelcomeScreen extends StatelessWidget {
                         onPressed: () {
                           Navigator.of(context).pushReplacement(
                             MaterialPageRoute(
-                              builder: (_) => RunScreen(), // 👈 УБРАЛ const
+                              builder: (_) => const RunScreen(),
                             ),
                           );
                         },
@@ -100,10 +100,9 @@ class WelcomeScreen extends StatelessWidget {
                     const SizedBox(height: 20),
                     OutlinedButton(
                       onPressed: () {
-                        // Можно добавить переход к истории или настройкам
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => HistoryScreen(history: []),
+                            builder: (_) => const HistoryScreen(),
                           ),
                         );
                       },
