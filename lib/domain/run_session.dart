@@ -3,7 +3,7 @@ import 'route_point.dart'; // Импорт RoutePoint
 
 part 'run_session.g.dart';
 
-@HiveType(typeId: 3) // Убедитесь, что typeId уникален
+@HiveType(typeId: 1) // Убедитесь, что typeId уникален
 class RunSession {
   @HiveField(0)
   final String id;

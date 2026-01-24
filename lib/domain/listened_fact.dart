@@ -5,7 +5,7 @@ part 'listened_fact.g.dart';
 
 enum FactType { poi, context, general }
 
-@HiveType(typeId: 10)
+@HiveType(typeId: 3)
 class ListenedFact {
   @HiveField(0)
   final String id;

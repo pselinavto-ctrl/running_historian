@@ -8,7 +8,7 @@ part of 'listened_fact.dart';
 
 class ListenedFactAdapter extends TypeAdapter<ListenedFact> {
   @override
-  final int typeId = 10;
+  final int typeId = 3;
 
   @override
   ListenedFact read(BinaryReader reader) {

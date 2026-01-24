@@ -4,7 +4,7 @@ import 'package:hive/hive.dart';
 
 part 'route_point.g.dart';
 
-@HiveType(typeId: 2) // Убедитесь, что typeId уникален и не занят
+@HiveType(typeId: 0) // Убедитесь, что typeId уникален и не занят
 class RoutePoint {
   @HiveField(0)
   final double lat;

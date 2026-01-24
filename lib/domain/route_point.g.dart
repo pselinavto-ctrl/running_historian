@@ -8,7 +8,7 @@ part of 'route_point.dart';
 
 class RoutePointAdapter extends TypeAdapter<RoutePoint> {
   @override
-  final int typeId = 2;
+  final int typeId = 0;
 
   @override
   RoutePoint read(BinaryReader reader) {

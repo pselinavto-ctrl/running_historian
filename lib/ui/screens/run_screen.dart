@@ -1,11 +1,11 @@
 // lib/ui/screens/run_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'dart:math' as math;
+import 'package:hive/hive.dart'; // 👈 ЭТО НОВАЯ СТРОКА
 import 'package:running_historian/domain/route_point.dart';
 import 'package:running_historian/domain/run_session.dart';
 import 'package:running_historian/storage/run_repository.dart';
@@ -19,7 +19,9 @@ import 'package:running_historian/services/background_service.dart';
 import 'package:running_historian/services/facts_service.dart';
 import 'package:running_historian/ui/screens/session_detail_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:running_historian/services/poi_service.dart'; // 👈 ДОБАВЛЕН ИМПОРТ
+import 'package:running_historian/services/poi_service.dart';
+// 👇 НОВЫЙ ИМПОРТ
+import 'package:running_historian/services/fact_bank_service.dart';
 
 // Стейт-машина
 enum RunState {
@@ -50,7 +52,10 @@ class _RunScreenState extends State<RunScreen>
   final AudioService _audio = AudioService();
   late final TtsService _tts;
   late final FactsService _factsService;
-  late final PoiService _poiService; // 👈 ДОБАВЛЕНО
+  late final PoiService _poiService;
+  // 👇 НОВОЕ: FactBankService
+  late final FactBankService _factBankService;
+
   List<RoutePoint> _route = [];
   DateTime? _runStartTime;
   RunSession? _currentSession;
@@ -97,7 +102,10 @@ class _RunScreenState extends State<RunScreen>
     super.initState();
     _tts = TtsService(_audio)..init();
     _factsService = FactsService(_tts);
-    _poiService = PoiService()..init(); // 👈 ИНИЦИАЛИЗАЦИЯ
+    _poiService = PoiService()..init();
+    // 👇 НОВОЕ: Инициализация FactBankService
+    _factBankService = FactBankService();
+
     _initAnimations();
     _loadHistory();
     _requestLocationPermissionAndStart();
@@ -127,7 +135,6 @@ class _RunScreenState extends State<RunScreen>
       _showErrorAndReturn('Разрешение на геолокацию не предоставлено.');
       return;
     }
-
     var notificationPermission = await Permission.notification.status;
     if (notificationPermission.isDenied) {
       notificationPermission = await Permission.notification.request();
@@ -136,7 +143,6 @@ class _RunScreenState extends State<RunScreen>
         return;
       }
     }
-
     _startBackgroundService();
     _initBackgroundListener();
     _attemptToGetCurrentLocation();
@@ -299,19 +305,16 @@ class _RunScreenState extends State<RunScreen>
       altitudeAccuracy: 0,
       headingAccuracy: 0,
     );
-
     if (_currentPosition != null && _isGpsJump(_currentPosition!, position)) {
       print('IGNORING GPS JUMP');
       return;
     }
-
     _currentPosition = position;
     final rawHeading = position.heading;
     _smoothedHeading = _smoothHeading(rawHeading);
     final rawPos = LatLng(position.latitude, position.longitude);
     final smoothed = _smoothPosition(rawPos);
     _lastSmoothedPosition = smoothed;
-
     setState(() {
       if (_state == RunState.searchingGps) {
         _state = RunState.ready;
@@ -404,7 +407,6 @@ class _RunScreenState extends State<RunScreen>
       });
       return;
     }
-
     // 2. Если нет — делегируем FactsService (статические POI или общие факты)
     _factsService.checkProximityToPoi(position);
   }
@@ -602,11 +604,30 @@ class _RunScreenState extends State<RunScreen>
         _smoothedHeading = 0.0;
         _elapsedRunTime = Duration.zero;
         _factsService.clearSessionState();
-        _poiService.resetAnnouncedFlags(); // 👈 СБРОС POI
+        _poiService.resetAnnouncedFlags();
         if (_currentPosition != null) {
           _startPoint = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
         }
       });
+
+      // 👇 НОВОЕ: Автоматическое пополнение банка фактов
+      try {
+        await _factBankService.init();
+        await _factBankService.replenishBank();
+
+        // 👇 НОВОЕ: Вывод фактов в консоль (для отладки)
+        final allFacts = _factBankService.getActiveFacts();
+        print('🔍 ВСЕГО АКТИВНЫХ ФАКТОВ: ${allFacts.length}');
+        for (int i = 0; i < math.min(3, allFacts.length); i++) {
+          print('— Факт #${i + 1}: ${allFacts[i].text.substring(0, math.min(100, allFacts[i].text.length))}...');
+        }
+
+        // Примерный размер данных (в байтах)
+        final boxSizeBytes = _factBankService.getBankSize() * 500; // грубая оценка ~500 байт на факт
+        print('📦 Примерный размер бокса "facts": ~${boxSizeBytes ~/ 1024} КБ');
+      } catch (e) {
+        print('⚠️ Ошибка при пополнении банка фактов: $e');
+      }
 
       // Загрузка POI по bbox
       if (_currentPosition != null) {
@@ -615,7 +636,6 @@ class _RunScreenState extends State<RunScreen>
         final delta = 0.018; // ~2 км
         await _poiService.loadPoiForBbox(lat - delta, lat + delta, lon - delta, lon + delta);
       }
-
       await RunRepository().clearActiveRoute();
       _runTicker?.cancel();
       _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -799,7 +819,6 @@ class _RunScreenState extends State<RunScreen>
     final currentRunTime = _getCurrentRunTime();
     final currentPace = _currentPace;
     final currentCalories = _calculateCalories().round();
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Ростов-на-Дону'),
