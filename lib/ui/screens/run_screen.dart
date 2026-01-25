@@ -5,7 +5,6 @@ import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'dart:math' as math;
-import 'package:hive/hive.dart'; // 👈 ЭТО НОВАЯ СТРОКА
 import 'package:running_historian/domain/route_point.dart';
 import 'package:running_historian/domain/run_session.dart';
 import 'package:running_historian/storage/run_repository.dart';
@@ -20,10 +19,9 @@ import 'package:running_historian/services/facts_service.dart';
 import 'package:running_historian/ui/screens/session_detail_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:running_historian/services/poi_service.dart';
-// 👇 НОВЫЙ ИМПОРТ
 import 'package:running_historian/services/fact_bank_service.dart';
+import 'package:running_historian/services/city_resolver.dart'; // ← добавлен импорт
 
-// Стейт-машина
 enum RunState {
   init,
   searchingGps,
@@ -53,7 +51,6 @@ class _RunScreenState extends State<RunScreen>
   late final TtsService _tts;
   late final FactsService _factsService;
   late final PoiService _poiService;
-  // 👇 НОВОЕ: FactBankService
   late final FactBankService _factBankService;
 
   List<RoutePoint> _route = [];
@@ -67,35 +64,33 @@ class _RunScreenState extends State<RunScreen>
   DateTime? _lastFactTime;
   double _heading = 0.0;
   LatLng? _startPoint;
+
   final Set<int> _lastFactIndices = <int>{};
   RunState _state = RunState.searchingGps;
   Timer? _countdownTimer;
   int _countdown = 3;
+
   late AnimationController _distanceController;
   late Animation<double> _distanceAnimation;
   late AnimationController _factController;
   late Animation<double> _factAnimation;
 
-  // FOLLOW MODE
   bool _followUser = true;
-
-  // Сглаживание
   LatLng? _smoothedPosition;
   double _smoothedHeading = 0.0;
   DateTime? _lastCameraUpdate;
   DateTime? _lastValidGpsTime;
+
   static const double _maxJumpMeters = 40;
   static const Duration _cameraInterval = Duration(milliseconds: 120);
 
-  // Кэширование
   List<int>? _cachedAllSpokenIndices;
-
-  // Последняя сглаженная позиция
   LatLng? _lastSmoothedPosition;
-
-  // Сессионное состояние
   final Set<String> _shownPoiIds = <String>{};
   final Set<int> _spokenFactIndices = <int>{};
+
+  // 🔑 Текущий город (определяется автоматически)
+  String? _currentCity;
 
   @override
   void initState() {
@@ -103,9 +98,7 @@ class _RunScreenState extends State<RunScreen>
     _tts = TtsService(_audio)..init();
     _factsService = FactsService(_tts);
     _poiService = PoiService()..init();
-    // 👇 НОВОЕ: Инициализация FactBankService
     _factBankService = FactBankService();
-
     _initAnimations();
     _loadHistory();
     _requestLocationPermissionAndStart();
@@ -391,9 +384,7 @@ class _RunScreenState extends State<RunScreen>
     _distanceController.forward();
   }
 
-  // ✅ ОСНОВНАЯ ЛОГИКА ФАКТОВ И POI
   void _checkProximity(Position position) async {
-    // 1. Проверяем динамические POI из OSM
     final poi = _poiService.getUnannouncedPoi(position.latitude, position.longitude);
     if (poi != null) {
       final factText = _poiService.formatPoiFact(poi);
@@ -407,7 +398,6 @@ class _RunScreenState extends State<RunScreen>
       });
       return;
     }
-    // 2. Если нет — делегируем FactsService (статические POI или общие факты)
     _factsService.checkProximityToPoi(position);
   }
 
@@ -610,32 +600,32 @@ class _RunScreenState extends State<RunScreen>
         }
       });
 
-      // 👇 НОВОЕ: Автоматическое пополнение банка фактов
-      try {
-        await _factBankService.init();
-        await _factBankService.replenishBank();
-
-        // 👇 НОВОЕ: Вывод фактов в консоль (для отладки)
-        final allFacts = _factBankService.getActiveFacts();
-        print('🔍 ВСЕГО АКТИВНЫХ ФАКТОВ: ${allFacts.length}');
-        for (int i = 0; i < math.min(3, allFacts.length); i++) {
-          print('— Факт #${i + 1}: ${allFacts[i].text.substring(0, math.min(100, allFacts[i].text.length))}...');
+      // 🔥 Определяем город через Nominatim
+      String? city;
+      if (_currentPosition != null) {
+        city = await CityResolver.detectCity(_currentPosition!.latitude, _currentPosition!.longitude);
+        if (city != null) {
+          setState(() {
+            _currentCity = city;
+          });
+          print('[FACTS] Определён город: $city');
         }
-
-        // Примерный размер данных (в байтах)
-        final boxSizeBytes = _factBankService.getBankSize() * 500; // грубая оценка ~500 байт на факт
-        print('📦 Примерный размер бокса "facts": ~${boxSizeBytes ~/ 1024} КБ');
-      } catch (e) {
-        print('⚠️ Ошибка при пополнении банка фактов: $e');
       }
 
-      // Загрузка POI по bbox
+      await _factBankService.init();
+
+      // ✅ ЗАПУСК В ФОНЕ — НЕ БЛОКИРУЕТ СТАРТ!
+      if (city != null) {
+        unawaited(_factBankService.replenishBank(city: city));
+      }
+
       if (_currentPosition != null) {
         final lat = _currentPosition!.latitude;
         final lon = _currentPosition!.longitude;
-        final delta = 0.018; // ~2 км
+        final delta = 0.018;
         await _poiService.loadPoiForBbox(lat - delta, lat + delta, lon - delta, lon + delta);
       }
+
       await RunRepository().clearActiveRoute();
       _runTicker?.cancel();
       _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -700,6 +690,11 @@ class _RunScreenState extends State<RunScreen>
       });
     }
     _speakButtonAction("Тренировка продолжается");
+
+    // Пополнить банк в фоне при возобновлении
+    if (_currentCity != null) {
+      unawaited(_factBankService.replenishBank(city: _currentCity!));
+    }
   }
 
   Future<void> _saveRunSession() async {
@@ -791,25 +786,78 @@ class _RunScreenState extends State<RunScreen>
     return _elapsedRunTime;
   }
 
+  void maybeReplenishFacts({String? city}) {
+    if (city != null) {
+      final size = _factBankService.getCityBankSize(city);
+      if (size < 15) {
+        unawaited(_factBankService.replenishBank(city: city));
+      }
+    }
+  }
+
   void _startGeneralFacts() {
     _factsTimer?.cancel();
     _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
-      if (_state == RunState.running && _route.length > 5) {
-        final now = DateTime.now();
-        if (_lastFactTime == null || now.difference(_lastFactTime!) >= const Duration(minutes: 3)) {
-          _lastFactTime = now;
-          final allSpokenIndices = _cachedAllSpokenIndices ??
-              await RunRepository().getAllSpokenFactIndices();
-          _cachedAllSpokenIndices = allSpokenIndices;
-          final factText = _factsService.getGeneralFact(allSpokenIndices);
-          if (factText != null) {
-            _tts.speak(factText);
-            setState(() {
-              _factsCount++;
-              _spokenFactIndices.addAll(_factsService.getSpokenIndices());
-            });
-          }
+      print('[FACT TIMER] tick');
+      print('[FACT TIMER] state=$_state, pos=$_currentPosition');
+
+      if (_lastFactTime != null &&
+          DateTime.now().difference(_lastFactTime!) < const Duration(minutes: 1, seconds: 50)) {
+        print('[FACT TIMER] Пропуск: слишком рано');
+        return;
+      }
+      if (_state != RunState.running) {
+        print('[FACT TIMER] Пропуск: состояние != running');
+        return;
+      }
+      if (_tts.isSpeaking) {
+        print('[FACT TIMER] TTS уже говорит — пропуск');
+        return;
+      }
+
+      String? city;
+      if (_currentPosition != null) {
+        city = await CityResolver.detectCity(_currentPosition!.latitude, _currentPosition!.longitude);
+        if (city != null && city != _currentCity) {
+          setState(() {
+            _currentCity = city;
+          });
+          unawaited(_factBankService.replenishBank(city: city));
         }
+      }
+      city ??= _currentCity;
+
+      print('[FACT TIMER] city=$city');
+      maybeReplenishFacts(city: city);
+
+      String? factText;
+      if (city != null) {
+        final cityFact = _factBankService.getCityFact(city);
+        if (cityFact != null) {
+          factText = cityFact.text;
+          await _factBankService.markAsConsumed(cityFact);
+        }
+      }
+
+      if (factText == null) {
+        final generalFact = _factBankService.getGeneralFact();
+        if (generalFact != null) {
+          factText = generalFact.text;
+          await _factBankService.markAsConsumed(generalFact);
+        }
+      }
+
+      print('[FACT TIMER] factText = ${factText?.substring(0, math.min(50, factText.length))}...');
+      if (factText != null) {
+        _lastFactTime = DateTime.now();
+        await _tts.speak(factText);
+        if (mounted) {
+          setState(() {
+            _factsCount++;
+          });
+        }
+      } else {
+        print('[FACT TIMER] Нет доступных фактов для озвучки');
       }
     });
   }
@@ -819,9 +867,13 @@ class _RunScreenState extends State<RunScreen>
     final currentRunTime = _getCurrentRunTime();
     final currentPace = _currentPace;
     final currentCalories = _calculateCalories().round();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ростов-на-Дону'),
+        // ✅ Динамический заголовок
+        title: Text(
+          _currentCity ?? 'Определяем город...',
+        ),
         actions: [
           IconButton(
             icon: Icon(
@@ -1202,6 +1254,7 @@ class _RunScreenState extends State<RunScreen>
                         _cachedAllSpokenIndices = null;
                         _factsService.clearSessionState();
                         _poiService.resetAnnouncedFlags();
+                        _currentCity = null;
                       });
                     },
                     style: ElevatedButton.styleFrom(
@@ -1220,3 +1273,5 @@ class _RunScreenState extends State<RunScreen>
     );
   }
 }
+
+void unawaited(Future<void> future) {}

@@ -23,13 +23,15 @@ class FactAdapter extends TypeAdapter<Fact> {
       landmarkId: fields[3] as String?,
       consumedAt: fields[4] as DateTime?,
       createdAt: fields[5] as DateTime,
+      city: fields[6] as String?,
+      region: fields[7] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Fact obj) {
     writer
-      ..writeByte(6)
+      ..writeByte(8)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -41,7 +43,11 @@ class FactAdapter extends TypeAdapter<Fact> {
       ..writeByte(4)
       ..write(obj.consumedAt)
       ..writeByte(5)
-      ..write(obj.createdAt);
+      ..write(obj.createdAt)
+      ..writeByte(6)
+      ..write(obj.city)
+      ..writeByte(7)
+      ..write(obj.region);
   }
 
   @override
