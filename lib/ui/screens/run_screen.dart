@@ -20,7 +20,7 @@ import 'package:running_historian/ui/screens/session_detail_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:running_historian/services/poi_service.dart';
 import 'package:running_historian/services/fact_bank_service.dart';
-import 'package:running_historian/services/city_resolver.dart'; // ← добавлен импорт
+import 'package:running_historian/services/city_resolver.dart';
 
 enum RunState {
   init,
@@ -89,7 +89,6 @@ class _RunScreenState extends State<RunScreen>
   final Set<String> _shownPoiIds = <String>{};
   final Set<int> _spokenFactIndices = <int>{};
 
-  // 🔑 Текущий город (определяется автоматически)
   String? _currentCity;
 
   @override
@@ -108,37 +107,40 @@ class _RunScreenState extends State<RunScreen>
   Future<void> _requestLocationPermissionAndStart() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
+      // Открываем настройки, но НЕ показываем ошибку
       await Geolocator.openLocationSettings();
+      // Ждём 1 сек и пробуем снова
+      await Future.delayed(const Duration(seconds: 1));
       serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _showErrorAndReturn('Служба геолокации отключена.');
+        // Если всё ещё выключено — просто ждём, не блокируем
+        _state = RunState.searchingGps;
         return;
       }
     }
+
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
     if (permission == LocationPermission.deniedForever) {
-      _showErrorAndReturn('Разрешение на геолокацию отклонено навсегда.');
+      _state = RunState.searchingGps;
       return;
     }
     if (permission != LocationPermission.always &&
         permission != LocationPermission.whileInUse) {
-      _showErrorAndReturn('Разрешение на геолокацию не предоставлено.');
+      _state = RunState.searchingGps;
       return;
     }
+
     var notificationPermission = await Permission.notification.status;
     if (notificationPermission.isDenied) {
       notificationPermission = await Permission.notification.request();
-      if (notificationPermission.isDenied) {
-        _showErrorAndReturn('Требуется разрешение на уведомления.');
-        return;
-      }
     }
+
     _startBackgroundService();
     _initBackgroundListener();
-    _attemptToGetCurrentLocation();
+    _attemptToGetCurrentPosition();
   }
 
   void _startBackgroundService() async {
@@ -157,49 +159,32 @@ class _RunScreenState extends State<RunScreen>
     print('Подписка на фоновое обновление местоположения установлена');
   }
 
-  Future<void> _attemptToGetCurrentLocation() async {
+  Future<void> _attemptToGetCurrentPosition() async {
     try {
+      // Используем Future.timeout вместо параметра timeout
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
-      );
+        desiredAccuracy: LocationAccuracy.high,
+      ).timeout(const Duration(seconds: 8));
+
       if (mounted) {
         setState(() {
-          final LatLng latLng = LatLng(position.latitude, position.longitude);
           _currentPosition = position;
-          _smoothedPosition = latLng;
-          _lastSmoothedPosition = latLng;
+          _smoothedPosition = LatLng(position.latitude, position.longitude);
+          _lastSmoothedPosition = _smoothedPosition;
           if (_state == RunState.searchingGps) {
             _state = RunState.ready;
           }
         });
-        _mapController.move(LatLng(position.latitude, position.longitude), 15);
+        _mapController.move(_smoothedPosition!, 15);
+        print('✅ Получена позиция: ${position.latitude}, ${position.longitude}');
       }
     } catch (e) {
-      print('Не удалось получить текущую позицию: $e');
-    }
-  }
-
-  void _showErrorAndReturn(String message) {
-    if (mounted) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          title: const Text('Геолокация'),
-          content: Text(message),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                if (Navigator.canPop(context)) {
-                  Navigator.pop(context);
-                }
-              },
-              child: const Text('ОК'),
-            ),
-          ],
-        ),
-      );
+      print('❌ Не удалось получить позицию: $e');
+      // Повторяем попытку, если ещё в состоянии поиска GPS
+      if (_state == RunState.searchingGps && mounted) {
+        await Future.delayed(const Duration(seconds: 2));
+        _attemptToGetCurrentPosition();
+      }
     }
   }
 
@@ -235,6 +220,10 @@ class _RunScreenState extends State<RunScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _restoreRouteFromBackground();
+      // При возврате в приложение — проверяем GPS
+      if (_state == RunState.searchingGps) {
+        unawaited(_attemptToGetCurrentPosition());
+      }
     }
   }
 
@@ -392,10 +381,13 @@ class _RunScreenState extends State<RunScreen>
       poi.announced = true;
       await poi.save();
       _lastFactTime = DateTime.now();
-      setState(() {
-        _factsCount++;
-        _shownPoiIds.add(poi.id);
-      });
+      if (mounted) {
+        setState(() {
+          _factsCount++;
+          _shownPoiIds.add(poi.id);
+          _spokenFactIndices.add(poi.id.hashCode);
+        });
+      }
       return;
     }
     _factsService.checkProximityToPoi(position);
@@ -600,21 +592,17 @@ class _RunScreenState extends State<RunScreen>
         }
       });
 
-      // 🔥 Определяем город через Nominatim
       String? city;
       if (_currentPosition != null) {
         city = await CityResolver.detectCity(_currentPosition!.latitude, _currentPosition!.longitude);
         if (city != null) {
-          setState(() {
-            _currentCity = city;
-          });
+          setState(() { _currentCity = city; });
           print('[FACTS] Определён город: $city');
         }
       }
 
       await _factBankService.init();
 
-      // ✅ ЗАПУСК В ФОНЕ — НЕ БЛОКИРУЕТ СТАРТ!
       if (city != null) {
         unawaited(_factBankService.replenishBank(city: city));
       }
@@ -691,7 +679,6 @@ class _RunScreenState extends State<RunScreen>
     }
     _speakButtonAction("Тренировка продолжается");
 
-    // Пополнить банк в фоне при возобновлении
     if (_currentCity != null) {
       unawaited(_factBankService.replenishBank(city: _currentCity!));
     }
@@ -819,9 +806,7 @@ class _RunScreenState extends State<RunScreen>
       if (_currentPosition != null) {
         city = await CityResolver.detectCity(_currentPosition!.latitude, _currentPosition!.longitude);
         if (city != null && city != _currentCity) {
-          setState(() {
-            _currentCity = city;
-          });
+          setState(() { _currentCity = city; });
           unawaited(_factBankService.replenishBank(city: city));
         }
       }
@@ -854,6 +839,7 @@ class _RunScreenState extends State<RunScreen>
         if (mounted) {
           setState(() {
             _factsCount++;
+            _spokenFactIndices.add(factText.hashCode);
           });
         }
       } else {
@@ -870,10 +856,7 @@ class _RunScreenState extends State<RunScreen>
 
     return Scaffold(
       appBar: AppBar(
-        // ✅ Динамический заголовок
-        title: Text(
-          _currentCity ?? 'Определяем город...',
-        ),
+        title: Text(_currentCity ?? 'Определяем город...'),
         actions: [
           IconButton(
             icon: Icon(
@@ -1255,6 +1238,7 @@ class _RunScreenState extends State<RunScreen>
                         _factsService.clearSessionState();
                         _poiService.resetAnnouncedFlags();
                         _currentCity = null;
+                        _spokenFactIndices.clear();
                       });
                     },
                     style: ElevatedButton.styleFrom(
