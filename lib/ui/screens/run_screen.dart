@@ -107,13 +107,11 @@ class _RunScreenState extends State<RunScreen>
   Future<void> _requestLocationPermissionAndStart() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      // Открываем настройки, но НЕ показываем ошибку
       await Geolocator.openLocationSettings();
-      // Ждём 1 сек и пробуем снова
       await Future.delayed(const Duration(seconds: 1));
       serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        // Если всё ещё выключено — просто ждём, не блокируем
+        // Не показываем ошибку — просто ждём
         _state = RunState.searchingGps;
         return;
       }
@@ -161,7 +159,6 @@ class _RunScreenState extends State<RunScreen>
 
   Future<void> _attemptToGetCurrentPosition() async {
     try {
-      // Используем Future.timeout вместо параметра timeout
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       ).timeout(const Duration(seconds: 8));
@@ -180,7 +177,6 @@ class _RunScreenState extends State<RunScreen>
       }
     } catch (e) {
       print('❌ Не удалось получить позицию: $e');
-      // Повторяем попытку, если ещё в состоянии поиска GPS
       if (_state == RunState.searchingGps && mounted) {
         await Future.delayed(const Duration(seconds: 2));
         _attemptToGetCurrentPosition();
@@ -220,7 +216,6 @@ class _RunScreenState extends State<RunScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _restoreRouteFromBackground();
-      // При возврате в приложение — проверяем GPS
       if (_state == RunState.searchingGps) {
         unawaited(_attemptToGetCurrentPosition());
       }
@@ -848,6 +843,34 @@ class _RunScreenState extends State<RunScreen>
     });
   }
 
+  // 🔁 Ключевой метод: сброс + немедленный запрос позиции
+  void _resetForNewRun() {
+    setState(() {
+      _state = RunState.searchingGps;
+      _followUser = true;
+      _route.clear();
+      _startPoint = null;
+      _distance = 0.0;
+      _totalDistanceInMeters = 0.0;
+      _elapsedRunTime = Duration.zero;
+      _factsCount = 0;
+      _lastFactTime = null;
+      _lastFactIndices.clear();
+      _lastCameraUpdate = null;
+      _lastValidGpsTime = null;
+      _smoothedPosition = null;
+      _smoothedHeading = 0.0;
+      _cachedAllSpokenIndices = null;
+      _factsService.clearSessionState();
+      _poiService.resetAnnouncedFlags();
+      _currentCity = null;
+      _spokenFactIndices.clear();
+    });
+
+    // ✅ СРАЗУ запрашиваем позицию — не ждём пользователя
+    unawaited(_attemptToGetCurrentPosition());
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentRunTime = _getCurrentRunTime();
@@ -1218,29 +1241,7 @@ class _RunScreenState extends State<RunScreen>
                   ),
                 if (_state == RunState.finished)
                   ElevatedButton(
-                    onPressed: () {
-                      setState(() {
-                        _state = RunState.searchingGps;
-                        _followUser = true;
-                        _route.clear();
-                        _startPoint = null;
-                        _distance = 0.0;
-                        _totalDistanceInMeters = 0.0;
-                        _elapsedRunTime = Duration.zero;
-                        _factsCount = 0;
-                        _lastFactTime = null;
-                        _lastFactIndices.clear();
-                        _lastCameraUpdate = null;
-                        _lastValidGpsTime = null;
-                        _smoothedPosition = null;
-                        _smoothedHeading = 0.0;
-                        _cachedAllSpokenIndices = null;
-                        _factsService.clearSessionState();
-                        _poiService.resetAnnouncedFlags();
-                        _currentCity = null;
-                        _spokenFactIndices.clear();
-                      });
-                    },
+                    onPressed: _resetForNewRun, // ← ВАЖНО: вызывает _resetForNewRun()
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue,
                       foregroundColor: Colors.white,
