@@ -1,3 +1,5 @@
+// lib/services/poi_service.dart
+
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
@@ -34,6 +36,7 @@ class PoiService {
 out center;
 ''';
     try {
+      // 🔑 УБРАН ЛИШНИЙ ПРОБЕЛ В URL (было '...interpreter  ')
       final response = await http.post(
         Uri.parse('https://overpass-api.de/api/interpreter'),
         body: query,
@@ -62,6 +65,8 @@ out center;
             }
           }
         }
+      } else {
+        print('POI загрузка: статус ${response.statusCode}');
       }
     } catch (e) {
       print('Ошибка загрузки POI: $e');

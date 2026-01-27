@@ -14,8 +14,7 @@ Future<void> initBackgroundService() async {
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
       autoStart: true,
-      isForegroundMode: true,
-      // 👇 ОБЯЗАТЕЛЬНО: канал и текст
+      isForegroundMode: true, // ← Достаточно этого для работы геолокации в фоне
       notificationChannelId: 'running_historian_channel',
       initialNotificationTitle: 'Running Historian',
       initialNotificationContent: 'Тренировка активна',
@@ -31,7 +30,19 @@ Future<void> initBackgroundService() async {
 void onStart(ServiceInstance service) async {
   // Подписка на остановку
   service.on('stopService').listen((_) {
+    print('[BG SERVICE] Received stop command');
     service.stopSelf();
+  });
+
+  // Подписка на старт тренировки — для сброса состояния
+  service.on('startRun').listen((_) {
+    print('[BG SERVICE] Run started — clearing route buffer');
+    try {
+      final box = Hive.box<RoutePoint>('active_route');
+      box.clear();
+    } catch (e) {
+      print('[BG SERVICE] Error clearing route: $e');
+    }
   });
 
   // Инициализация Hive в фоне
@@ -47,7 +58,7 @@ void onStart(ServiceInstance service) async {
 
     _startLocationUpdates(service);
   } catch (e, stack) {
-    print('Ошибка фона: $e\n$stack');
+    print('[BG SERVICE] Ошибка инициализации: $e\n$stack');
   }
 }
 
@@ -57,30 +68,46 @@ bool onIosBackground(ServiceInstance service) {
 }
 
 void _startLocationUpdates(ServiceInstance service) {
+  print('[BG SERVICE] Starting location stream (distanceFilter: 3m)...');
+  
   Geolocator.getPositionStream(
     locationSettings: const LocationSettings(
       accuracy: LocationAccuracy.bestForNavigation,
-      distanceFilter: 3,
+      distanceFilter: 3, // ← каждые 3 метра
     ),
-  ).listen((Position position) {
-    try {
-      final box = Hive.box<RoutePoint>('active_route');
-      box.add(RoutePoint(
-        lat: position.latitude,
-        lon: position.longitude,
-        timestamp: position.timestamp,
-        speed: position.speed,
-      ));
+  ).listen(
+    (Position position) {
+      print('[BG SERVICE] Got position: ${position.latitude}, ${position.longitude} | speed: ${position.speed} m/s');
+      
+      try {
+        // Сохраняем в Hive
+        final box = Hive.box<RoutePoint>('active_route');
+        box.add(RoutePoint(
+          lat: position.latitude,
+          lon: position.longitude,
+          timestamp: position.timestamp,
+          speed: position.speed,
+        ));
 
-      service.invoke('locationUpdate', {
-        'lat': position.latitude,
-        'lon': position.longitude,
-        'timestamp': position.timestamp.toIso8601String(),
-        'heading': position.heading,
-        'speed': position.speed,
+        // Отправляем в основное приложение
+        service.invoke('locationUpdate', {
+          'lat': position.latitude,
+          'lon': position.longitude,
+          'timestamp': position.timestamp.toIso8601String(),
+          'heading': position.heading,
+          'speed': position.speed,
+        });
+      } catch (e) {
+        print('[BG SERVICE] Ошибка обработки точки: $e');
+      }
+    },
+    onError: (error) {
+      print('[BG SERVICE] Location stream error: $error');
+      // Перезапуск потока через 5 секунд
+      Future.delayed(Duration(seconds: 5), () {
+        _startLocationUpdates(service);
       });
-    } catch (e) {
-      print('Ошибка сохранения точки: $e');
-    }
-  });
+    },
+    cancelOnError: false,
+  );
 }

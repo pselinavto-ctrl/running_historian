@@ -52,7 +52,6 @@ class _RunScreenState extends State<RunScreen>
   late final FactsService _factsService;
   late final PoiService _poiService;
   late final FactBankService _factBankService;
-
   List<RoutePoint> _route = [];
   DateTime? _runStartTime;
   RunSession? _currentSession;
@@ -64,31 +63,25 @@ class _RunScreenState extends State<RunScreen>
   DateTime? _lastFactTime;
   double _heading = 0.0;
   LatLng? _startPoint;
-
   final Set<int> _lastFactIndices = <int>{};
   RunState _state = RunState.searchingGps;
   Timer? _countdownTimer;
   int _countdown = 3;
-
   late AnimationController _distanceController;
   late Animation<double> _distanceAnimation;
   late AnimationController _factController;
   late Animation<double> _factAnimation;
-
   bool _followUser = true;
   LatLng? _smoothedPosition;
   double _smoothedHeading = 0.0;
   DateTime? _lastCameraUpdate;
   DateTime? _lastValidGpsTime;
-
   static const double _maxJumpMeters = 40;
   static const Duration _cameraInterval = Duration(milliseconds: 120);
-
   List<int>? _cachedAllSpokenIndices;
   LatLng? _lastSmoothedPosition;
   final Set<String> _shownPoiIds = <String>{};
   final Set<int> _spokenFactIndices = <int>{};
-
   String? _currentCity;
 
   @override
@@ -111,31 +104,39 @@ class _RunScreenState extends State<RunScreen>
       await Future.delayed(const Duration(seconds: 1));
       serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        // Не показываем ошибку — просто ждём
-        _state = RunState.searchingGps;
+        if (mounted) {
+          setState(() {
+            _state = RunState.searchingGps;
+          });
+        }
         return;
       }
     }
-
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
     if (permission == LocationPermission.deniedForever) {
-      _state = RunState.searchingGps;
+      if (mounted) {
+        setState(() {
+          _state = RunState.searchingGps;
+        });
+      }
       return;
     }
     if (permission != LocationPermission.always &&
         permission != LocationPermission.whileInUse) {
-      _state = RunState.searchingGps;
+      if (mounted) {
+        setState(() {
+          _state = RunState.searchingGps;
+        });
+      }
       return;
     }
-
     var notificationPermission = await Permission.notification.status;
     if (notificationPermission.isDenied) {
       notificationPermission = await Permission.notification.request();
     }
-
     _startBackgroundService();
     _initBackgroundListener();
     _attemptToGetCurrentPosition();
@@ -162,7 +163,6 @@ class _RunScreenState extends State<RunScreen>
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       ).timeout(const Duration(seconds: 8));
-
       if (mounted) {
         setState(() {
           _currentPosition = position;
@@ -282,16 +282,25 @@ class _RunScreenState extends State<RunScreen>
       altitudeAccuracy: 0,
       headingAccuracy: 0,
     );
+    
+    // 🔑 УСТАНОВКА СТАРТОВОЙ ТОЧКИ ПРИ ПЕРВОЙ ПОЗИЦИИ ПОСЛЕ СТАРТА
+    if (_state == RunState.running && _startPoint == null && _currentPosition == null) {
+      _startPoint = LatLng(position.latitude, position.longitude);
+      print('📍 Стартовая точка установлена: ${_startPoint!.latitude}, ${_startPoint!.longitude}');
+    }
+    
     if (_currentPosition != null && _isGpsJump(_currentPosition!, position)) {
-      print('IGNORING GPS JUMP');
+      print('IGNORING GPS JUMP: ${position.latitude}, ${position.longitude}');
       return;
     }
+    
     _currentPosition = position;
     final rawHeading = position.heading;
     _smoothedHeading = _smoothHeading(rawHeading);
     final rawPos = LatLng(position.latitude, position.longitude);
     final smoothed = _smoothPosition(rawPos);
     _lastSmoothedPosition = smoothed;
+    
     setState(() {
       if (_state == RunState.searchingGps) {
         _state = RunState.ready;
@@ -308,6 +317,7 @@ class _RunScreenState extends State<RunScreen>
         _checkProximity(position);
       }
     });
+    
     _moveCamera(smoothed);
   }
 
@@ -582,34 +592,20 @@ class _RunScreenState extends State<RunScreen>
         _elapsedRunTime = Duration.zero;
         _factsService.clearSessionState();
         _poiService.resetAnnouncedFlags();
-        if (_currentPosition != null) {
-          _startPoint = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-        }
+        
+        // 🔑 КРИТИЧЕСКИ ВАЖНО: сбросить текущую позицию чтобы избежать "прыжка GPS"
+        _currentPosition = null;
+        _startPoint = null;
       });
 
-      String? city;
-      if (_currentPosition != null) {
-        city = await CityResolver.detectCity(_currentPosition!.latitude, _currentPosition!.longitude);
-        if (city != null) {
-          setState(() { _currentCity = city; });
-          print('[FACTS] Определён город: $city');
-        }
-      }
+      // Уведомить фоновую службу о старте тренировки (ВНЕ setState!)
+      FlutterBackgroundService().invoke('startRun');
 
+      // Инициализация сервисов
       await _factBankService.init();
-
-      if (city != null) {
-        unawaited(_factBankService.replenishBank(city: city));
-      }
-
-      if (_currentPosition != null) {
-        final lat = _currentPosition!.latitude;
-        final lon = _currentPosition!.longitude;
-        final delta = 0.018;
-        await _poiService.loadPoiForBbox(lat - delta, lat + delta, lon - delta, lon + delta);
-      }
-
       await RunRepository().clearActiveRoute();
+      
+      // Таймер времени пробежки
       _runTicker?.cancel();
       _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted && _state == RunState.running) {
@@ -618,6 +614,7 @@ class _RunScreenState extends State<RunScreen>
           });
         }
       });
+      
       _audio.playMusic(_musicMode);
       _startGeneralFacts();
       _speakButtonAction("Тренировка началась");
@@ -673,7 +670,6 @@ class _RunScreenState extends State<RunScreen>
       });
     }
     _speakButtonAction("Тренировка продолжается");
-
     if (_currentCity != null) {
       unawaited(_factBankService.replenishBank(city: _currentCity!));
     }
@@ -782,7 +778,6 @@ class _RunScreenState extends State<RunScreen>
     _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
       print('[FACT TIMER] tick');
       print('[FACT TIMER] state=$_state, pos=$_currentPosition');
-
       if (_lastFactTime != null &&
           DateTime.now().difference(_lastFactTime!) < const Duration(minutes: 1, seconds: 50)) {
         print('[FACT TIMER] Пропуск: слишком рано');
@@ -796,7 +791,6 @@ class _RunScreenState extends State<RunScreen>
         print('[FACT TIMER] TTS уже говорит — пропуск');
         return;
       }
-
       String? city;
       if (_currentPosition != null) {
         city = await CityResolver.detectCity(_currentPosition!.latitude, _currentPosition!.longitude);
@@ -806,10 +800,8 @@ class _RunScreenState extends State<RunScreen>
         }
       }
       city ??= _currentCity;
-
       print('[FACT TIMER] city=$city');
       maybeReplenishFacts(city: city);
-
       String? factText;
       if (city != null) {
         final cityFact = _factBankService.getCityFact(city);
@@ -818,7 +810,6 @@ class _RunScreenState extends State<RunScreen>
           await _factBankService.markAsConsumed(cityFact);
         }
       }
-
       if (factText == null) {
         final generalFact = _factBankService.getGeneralFact();
         if (generalFact != null) {
@@ -826,7 +817,6 @@ class _RunScreenState extends State<RunScreen>
           await _factBankService.markAsConsumed(generalFact);
         }
       }
-
       print('[FACT TIMER] factText = ${factText?.substring(0, math.min(50, factText.length))}...');
       if (factText != null) {
         _lastFactTime = DateTime.now();
@@ -843,7 +833,6 @@ class _RunScreenState extends State<RunScreen>
     });
   }
 
-  // 🔁 Ключевой метод: сброс + немедленный запрос позиции
   void _resetForNewRun() {
     setState(() {
       _state = RunState.searchingGps;
@@ -866,8 +855,6 @@ class _RunScreenState extends State<RunScreen>
       _currentCity = null;
       _spokenFactIndices.clear();
     });
-
-    // ✅ СРАЗУ запрашиваем позицию — не ждём пользователя
     unawaited(_attemptToGetCurrentPosition());
   }
 
@@ -876,7 +863,6 @@ class _RunScreenState extends State<RunScreen>
     final currentRunTime = _getCurrentRunTime();
     final currentPace = _currentPace;
     final currentCalories = _calculateCalories().round();
-
     return Scaffold(
       appBar: AppBar(
         title: Text(_currentCity ?? 'Определяем город...'),
@@ -1241,7 +1227,7 @@ class _RunScreenState extends State<RunScreen>
                   ),
                 if (_state == RunState.finished)
                   ElevatedButton(
-                    onPressed: _resetForNewRun, // ← ВАЖНО: вызывает _resetForNewRun()
+                    onPressed: _resetForNewRun,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue,
                       foregroundColor: Colors.white,
