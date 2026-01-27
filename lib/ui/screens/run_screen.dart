@@ -72,17 +72,20 @@ class _RunScreenState extends State<RunScreen>
   late AnimationController _factController;
   late Animation<double> _factAnimation;
   bool _followUser = true;
-  LatLng? _smoothedPosition;
   double _smoothedHeading = 0.0;
   DateTime? _lastCameraUpdate;
   DateTime? _lastValidGpsTime;
-  static const double _maxJumpMeters = 40;
   static const Duration _cameraInterval = Duration(milliseconds: 120);
   List<int>? _cachedAllSpokenIndices;
   LatLng? _lastSmoothedPosition;
   final Set<String> _shownPoiIds = <String>{};
   final Set<int> _spokenFactIndices = <int>{};
   String? _currentCity;
+  
+  // 🔑 ИСПРАВЛЕНО: ОСЛАБЛЕННЫЙ КАЛМАН (быстрее реагирует)
+  final KalmanLatLng _kalman = KalmanLatLng(8.0, 3.0);
+  DateTime? _lastKalmanTime;
+  double _smoothedSpeed = 0.0;
 
   @override
   void initState() {
@@ -166,13 +169,12 @@ class _RunScreenState extends State<RunScreen>
       if (mounted) {
         setState(() {
           _currentPosition = position;
-          _smoothedPosition = LatLng(position.latitude, position.longitude);
-          _lastSmoothedPosition = _smoothedPosition;
+          _lastSmoothedPosition = LatLng(position.latitude, position.longitude);
           if (_state == RunState.searchingGps) {
             _state = RunState.ready;
           }
         });
-        _mapController.move(_smoothedPosition!, 15);
+        _mapController.move(_lastSmoothedPosition!, 15);
         print('✅ Получена позиция: ${position.latitude}, ${position.longitude}');
       }
     } catch (e) {
@@ -229,30 +231,23 @@ class _RunScreenState extends State<RunScreen>
     }
   }
 
-  bool _isGpsJump(Position prev, Position next) {
+  // 🔑 НОВЫЙ МЕТОД: ОГРАНИЧЕНИЕ ШАГА ВМЕСТО ОТБРАСЫВАНИЯ
+  LatLng _limitStep(LatLng from, LatLng to, double maxMeters) {
     final d = Geolocator.distanceBetween(
-      prev.latitude,
-      prev.longitude,
-      next.latitude,
-      next.longitude,
+      from.latitude, from.longitude,
+      to.latitude, to.longitude,
     );
-    return d > _maxJumpMeters;
-  }
 
-  LatLng _smoothPosition(LatLng raw) {
-    if (_smoothedPosition == null) {
-      _smoothedPosition = raw;
-      return raw;
-    }
-    const alpha = 0.15;
-    final lat = _smoothedPosition!.latitude + alpha * (raw.latitude - _smoothedPosition!.latitude);
-    final lon = _smoothedPosition!.longitude + alpha * (raw.longitude - _smoothedPosition!.longitude);
-    _smoothedPosition = LatLng(lat, lon);
-    return _smoothedPosition!;
+    if (d <= maxMeters) return to;
+
+    final t = maxMeters / d;
+    final lat = from.latitude + (to.latitude - from.latitude) * t;
+    final lon = from.longitude + (to.longitude - from.longitude) * t;
+    return LatLng(lat, lon);
   }
 
   double _smoothHeading(double raw) {
-    const alpha = 0.2;
+    const alpha = 0.25;
     double delta = raw - _smoothedHeading;
     if (delta > 180) delta -= 360;
     if (delta < -180) delta += 360;
@@ -260,21 +255,32 @@ class _RunScreenState extends State<RunScreen>
     return _smoothedHeading;
   }
 
-  LatLng _lookAhead(LatLng pos, double speed) {
-    final distance = math.min(speed * 0.7, 8);
+  double _smoothSpeed(double raw) {
+    const alpha = 0.3;
+    _smoothedSpeed = _smoothedSpeed + alpha * (raw - _smoothedSpeed);
+    return _smoothedSpeed;
+  }
+
+  LatLng _lookAhead(LatLng pos, double rawSpeed) {
+    final speed = _smoothSpeed(rawSpeed);
+    final distance = (speed * 0.6).clamp(0.0, 8.0);
+    
     final rad = _smoothedHeading * math.pi / 180;
     final dLat = (distance / 111111) * math.cos(rad);
     final dLon = (distance / (111111 * math.cos(pos.latitude * math.pi / 180))) * math.sin(rad);
+    
     return LatLng(pos.latitude + dLat, pos.longitude + dLon);
   }
 
+  // 🔑 КРИТИЧЕСКИ ИСПРАВЛЕННЫЙ МЕТОД
   void _onBackgroundLocation(dynamic data) {
     if (!mounted || data['lat'] == null || data['lon'] == null) return;
+    
     final position = Position(
       latitude: data['lat'],
       longitude: data['lon'],
       timestamp: data['timestamp'] != null ? DateTime.parse(data['timestamp']) : DateTime.now(),
-      accuracy: 5,
+      accuracy: (data['accuracy'] as num?)?.toDouble() ?? 8.0,
       altitude: 0,
       heading: (data['heading'] as num?)?.toDouble() ?? _heading,
       speed: (data['speed'] as num?)?.toDouble() ?? 0,
@@ -282,43 +288,87 @@ class _RunScreenState extends State<RunScreen>
       altitudeAccuracy: 0,
       headingAccuracy: 0,
     );
-    
-    // 🔑 УСТАНОВКА СТАРТОВОЙ ТОЧКИ ПРИ ПЕРВОЙ ПОЗИЦИИ ПОСЛЕ СТАРТА
-    if (_state == RunState.running && _startPoint == null && _currentPosition == null) {
-      _startPoint = LatLng(position.latitude, position.longitude);
-      print('📍 Стартовая точка установлена: ${_startPoint!.latitude}, ${_startPoint!.longitude}');
-    }
-    
-    if (_currentPosition != null && _isGpsJump(_currentPosition!, position)) {
-      print('IGNORING GPS JUMP: ${position.latitude}, ${position.longitude}');
-      return;
-    }
-    
+
     _currentPosition = position;
-    final rawHeading = position.heading;
-    _smoothedHeading = _smoothHeading(rawHeading);
-    final rawPos = LatLng(position.latitude, position.longitude);
-    final smoothed = _smoothPosition(rawPos);
-    _lastSmoothedPosition = smoothed;
-    
+
+    // 🔑 СНАЧАЛА ПОЛУЧАЕМ RAW
+    LatLng rawLatLng = LatLng(position.latitude, position.longitude);
+
+    // 🔑 ПРИМЕНЯЕМ ОГРАНИЧЕНИЕ ШАГА (НЕ ОТБРАСЫВАЕМ ТОЧКИ!)
+    if (_lastSmoothedPosition != null) {
+      rawLatLng = _limitStep(
+        _lastSmoothedPosition!,
+        rawLatLng,
+        25.0, // максимум 25 м за тик
+      );
+    }
+
+    // 🔑 ФИЛЬТР КАЛМАНА — ТОЛЬКО ДЛЯ UI (маркер, камера)
+    final now = position.timestamp;
+    final dt = _lastKalmanTime == null
+        ? 1.0
+        : math.max(0.2, now.difference(_lastKalmanTime!).inMilliseconds / 1000.0);
+    _lastKalmanTime = now;
+
+    final filteredLatLng = _kalman.process(
+      rawLatLng,
+      position.accuracy.clamp(5.0, 25.0),
+      dt,
+    );
+
+    // heading
+    _smoothedHeading = _smoothHeading(position.heading);
+
     setState(() {
       if (_state == RunState.searchingGps) {
         _state = RunState.ready;
-        _mapController.move(smoothed, 15);
+        _mapController.move(filteredLatLng, 15);
       }
+
       if (_state == RunState.running) {
+        // 🔑 МАРШРУТ ПИШЕМ ПО RAW (ограниченному, но НЕ отфильтрованному Калманом!)
         _route.add(RoutePoint(
-          lat: smoothed.latitude,
-          lon: smoothed.longitude,
+          lat: rawLatLng.latitude,
+          lon: rawLatLng.longitude,
           timestamp: position.timestamp,
           speed: position.speed,
         ));
+        
+        // 🔑 УСТАНОВКА СТАРТОВОЙ ТОЧКИ ПРИ ПЕРВОЙ ТОЧКЕ
+        if (_startPoint == null) {
+          _startPoint = rawLatLng;
+          print('📍 Стартовая точка установлена: ${_startPoint!.latitude}, ${_startPoint!.longitude}');
+          
+          // 🔑 ЗАГРУЗКА POI ПРИ ПЕРВОЙ ТОЧКЕ (БЕЗ ЗАДЕРЖКИ!)
+          final delta = 0.018;
+          unawaited(_poiService.loadPoiForBbox(
+            rawLatLng.latitude - delta,
+            rawLatLng.latitude + delta,
+            rawLatLng.longitude - delta,
+            rawLatLng.longitude + delta,
+          ));
+          
+          // 🔑 ОПРЕДЕЛЕНИЕ ГОРОДА ПРИ ПЕРВОЙ ТОЧКЕ (ИСПРАВЛЕНО: правильный вызов unawaited)
+          unawaited(() async {
+            final city = await CityResolver.detectCity(rawLatLng.latitude, rawLatLng.longitude);
+            if (city != null && mounted) {
+              setState(() { _currentCity = city; });
+              print('[FACTS] Определён город: $city');
+              unawaited(_factBankService.replenishBank(city: city));
+            }
+          }());
+        }
+
         _calculateDistance();
         _checkProximity(position);
       }
+
+      // 🔑 ОБНОВЛЯЕМ ПОЗИЦИЮ ДЛЯ СЛЕДУЮЩЕГО ШАГА
+      _lastSmoothedPosition = filteredLatLng;
     });
-    
-    _moveCamera(smoothed);
+
+    // 🔑 КАМЕРА И МАРКЕР ИСПОЛЬЗУЮТ FILTERED (сглаженные)
+    _moveCamera(filteredLatLng);
   }
 
   void _moveCamera(LatLng pos) {
@@ -587,25 +637,22 @@ class _RunScreenState extends State<RunScreen>
         _lastFactIndices.clear();
         _lastCameraUpdate = null;
         _lastValidGpsTime = null;
-        _smoothedPosition = null;
         _smoothedHeading = 0.0;
         _elapsedRunTime = Duration.zero;
         _factsService.clearSessionState();
         _poiService.resetAnnouncedFlags();
         
-        // 🔑 КРИТИЧЕСКИ ВАЖНО: сбросить текущую позицию чтобы избежать "прыжка GPS"
-        _currentPosition = null;
+        // 🔑 КРИТИЧЕСКИ ВАЖНО: НЕ СБРАСЫВАЕМ _currentPosition — оставляем для мгновенного отображения стрелки!
         _startPoint = null;
+        // _lastSmoothedPosition остаётся прежним — стрелка отобразится сразу
       });
 
-      // Уведомить фоновую службу о старте тренировки (ВНЕ setState!)
       FlutterBackgroundService().invoke('startRun');
 
-      // Инициализация сервисов
-      await _factBankService.init();
-      await RunRepository().clearActiveRoute();
+      // 🔑 ИНИЦИАЛИЗАЦИЯ БЕЗ БЛОКИРОВКИ UI
+      unawaited(_factBankService.init());
+      unawaited(RunRepository().clearActiveRoute());
       
-      // Таймер времени пробежки
       _runTicker?.cancel();
       _runTicker = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted && _state == RunState.running) {
@@ -693,7 +740,7 @@ class _RunScreenState extends State<RunScreen>
         _history.add(session);
       });
     }
-    print("💾 Сессия сохранена: $_distance км, $_factsCount фактов, ${_spokenFactIndices.length} индексов, ${_shownPoiIds.length} POI");
+    print("💾 Сессия сохранена: $_distance км, $_factsCount фактов");
   }
 
   String get _currentPace {
@@ -713,10 +760,9 @@ class _RunScreenState extends State<RunScreen>
 
   List<Polyline> _buildSpeedPolylines() {
     final polylines = <Polyline>[];
-    final smoothedRoute = _smoothRoute(_route, 5);
-    for (int i = 1; i < smoothedRoute.length; i++) {
-      final p1 = smoothedRoute[i - 1];
-      final p2 = smoothedRoute[i];
+    for (int i = 1; i < _route.length; i++) {
+      final p1 = _route[i - 1];
+      final p2 = _route[i];
       Color color;
       if (p1.speed < 2) {
         color = Colors.blue;
@@ -732,32 +778,6 @@ class _RunScreenState extends State<RunScreen>
       ));
     }
     return polylines;
-  }
-
-  List<RoutePoint> _smoothRoute(List<RoutePoint> route, int windowSize) {
-    if (route.length < windowSize) return route;
-    final smoothed = <RoutePoint>[];
-    final halfWindow = windowSize ~/ 2;
-    for (int i = 0; i < route.length; i++) {
-      double latSum = 0;
-      double lonSum = 0;
-      int count = 0;
-      for (int j = -halfWindow; j <= halfWindow; j++) {
-        final idx = i + j;
-        if (idx >= 0 && idx < route.length) {
-          latSum += route[idx].lat;
-          lonSum += route[idx].lon;
-          count++;
-        }
-      }
-      smoothed.add(RoutePoint(
-        lat: latSum / count,
-        lon: lonSum / count,
-        timestamp: route[i].timestamp,
-        speed: route[i].speed,
-      ));
-    }
-    return smoothed;
   }
 
   Duration _getCurrentRunTime() {
@@ -776,21 +796,13 @@ class _RunScreenState extends State<RunScreen>
   void _startGeneralFacts() {
     _factsTimer?.cancel();
     _factsTimer = Timer.periodic(const Duration(minutes: 2), (timer) async {
-      print('[FACT TIMER] tick');
-      print('[FACT TIMER] state=$_state, pos=$_currentPosition');
       if (_lastFactTime != null &&
           DateTime.now().difference(_lastFactTime!) < const Duration(minutes: 1, seconds: 50)) {
-        print('[FACT TIMER] Пропуск: слишком рано');
         return;
       }
-      if (_state != RunState.running) {
-        print('[FACT TIMER] Пропуск: состояние != running');
-        return;
-      }
-      if (_tts.isSpeaking) {
-        print('[FACT TIMER] TTS уже говорит — пропуск');
-        return;
-      }
+      if (_state != RunState.running) return;
+      if (_tts.isSpeaking) return;
+      
       String? city;
       if (_currentPosition != null) {
         city = await CityResolver.detectCity(_currentPosition!.latitude, _currentPosition!.longitude);
@@ -800,8 +812,7 @@ class _RunScreenState extends State<RunScreen>
         }
       }
       city ??= _currentCity;
-      print('[FACT TIMER] city=$city');
-      maybeReplenishFacts(city: city);
+      
       String? factText;
       if (city != null) {
         final cityFact = _factBankService.getCityFact(city);
@@ -817,7 +828,7 @@ class _RunScreenState extends State<RunScreen>
           await _factBankService.markAsConsumed(generalFact);
         }
       }
-      print('[FACT TIMER] factText = ${factText?.substring(0, math.min(50, factText.length))}...');
+      
       if (factText != null) {
         _lastFactTime = DateTime.now();
         await _tts.speak(factText);
@@ -827,8 +838,6 @@ class _RunScreenState extends State<RunScreen>
             _spokenFactIndices.add(factText.hashCode);
           });
         }
-      } else {
-        print('[FACT TIMER] Нет доступных фактов для озвучки');
       }
     });
   }
@@ -847,13 +856,16 @@ class _RunScreenState extends State<RunScreen>
       _lastFactIndices.clear();
       _lastCameraUpdate = null;
       _lastValidGpsTime = null;
-      _smoothedPosition = null;
       _smoothedHeading = 0.0;
       _cachedAllSpokenIndices = null;
       _factsService.clearSessionState();
       _poiService.resetAnnouncedFlags();
       _currentCity = null;
       _spokenFactIndices.clear();
+      _lastSmoothedPosition = null;
+      _kalman.reset();
+      _lastKalmanTime = null;
+      _smoothedSpeed = 0.0;
     });
     unawaited(_attemptToGetCurrentPosition());
   }
@@ -903,9 +915,7 @@ class _RunScreenState extends State<RunScreen>
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
-              initialCenter: _currentPosition != null
-                  ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
-                  : const LatLng(47.2313, 39.7233),
+              initialCenter: _lastSmoothedPosition ?? const LatLng(47.2313, 39.7233),
               initialZoom: 16,
             ),
             children: [
@@ -1242,6 +1252,36 @@ class _RunScreenState extends State<RunScreen>
         ],
       ),
     );
+  }
+}
+
+// 🔑 ФИЛЬТР КАЛМАНА
+class KalmanLatLng {
+  double qMetresPerSecond;
+  double rMetres;
+  double lat = 0.0;
+  double lng = 0.0;
+  double variance = -1;
+
+  KalmanLatLng(this.qMetresPerSecond, this.rMetres);
+
+  void reset() {
+    variance = -1;
+  }
+
+  LatLng process(LatLng measurement, double accuracy, double dt) {
+    if (variance < 0) {
+      lat = measurement.latitude;
+      lng = measurement.longitude;
+      variance = accuracy * accuracy;
+    } else {
+      variance += dt * qMetresPerSecond * qMetresPerSecond;
+      final k = variance / (variance + accuracy * accuracy);
+      lat += k * (measurement.latitude - lat);
+      lng += k * (measurement.longitude - lng);
+      variance *= (1 - k);
+    }
+    return LatLng(lat, lng);
   }
 }
 
